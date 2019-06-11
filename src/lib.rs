@@ -19,6 +19,8 @@ pub enum Error {
     BadReference(String),
     #[fail(display = "Schema not supported: {:?}", _0)]
     UnsupportedKind(SchemaKind),
+    #[fail(display = "Definition is too complex: {:?}", _0)]
+    TooComplex(Schema)
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -51,7 +53,7 @@ fn make_types(api: &OpenAPI) -> Result<Map<Typ>> {
     if let Some(component) = &api.components {
         for (name, schema) in &component.schemas {
             let schema = dereference(schema, api)?;
-            let typ = build_type(schema)?;
+            let typ = build_type(schema, api)?;
             assert!(typs.insert(name.to_string(), typ).is_none());
         }
     }
@@ -63,20 +65,60 @@ enum Typ {
     F64,
     I64,
     Bool,
+    Array(Box<Typ>),
+    Struct(Map<Typ>)
 }
 
-fn build_type(schema: &Schema) -> Result<Typ> {
+impl Typ {
+    fn is_complex(&self) -> bool {
+        match self {
+            Typ::Array(typ) => match &**typ {
+                // Vec<i32>, Vec<Vec<i32>> are simple, Vec<MyStruct> is complex
+                Typ::Array(inner) => inner.is_complex(),
+                Typ::Struct(_) => true,
+                _ => false
+            }
+            Typ::Struct(_) => true,
+            _ => false
+        }
+    }
+}
+
+fn build_type(schema: &Schema, api: &OpenAPI) -> Result<Typ> {
     let ty = if let SchemaKind::Type(ty) = &schema.schema_kind {
         ty
     } else {
         return Err(Error::UnsupportedKind(schema.schema_kind.clone()));
     };
     let typ = match ty {
+        // TODO make enums from string
+        // TODO fail on other validation
         Type::String(_) => Typ::String,
         Type::Number(_) => Typ::F64,
         Type::Integer(_) => Typ::I64,
         Type::Boolean {} => Typ::Bool,
-        _ => unimplemented!(),
+        Type::Array(arr) => {
+            let items = arr.items.clone().unbox();
+            let schema = dereference(&items, api)?;
+            let inner = build_type(schema, api)?;
+            if inner.is_complex() {
+                return Err(Error::TooComplex(schema.clone()))
+            };
+            Typ::Array(Box::new(build_type(schema, api)?))
+        }
+        Type::Object(obj) => {
+            let mut fields = Map::new();
+            for (name, schemaref) in &obj.properties {
+                let schemaref = schemaref.clone().unbox();
+                let schema = dereference(&schemaref, api)?;
+                let inner = build_type(schema, api)?;
+                if inner.is_complex() {
+                    return Err(Error::TooComplex(schema.clone()))
+                };
+                assert!(fields.insert(name.clone(), inner).is_none());
+            }
+            Typ::Struct(fields)
+        }
     };
     Ok(typ)
 }
