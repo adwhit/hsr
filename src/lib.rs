@@ -89,6 +89,20 @@ impl Typ {
     }
 }
 
+macro_rules! typ_from_objlike {
+    ($obj: ident, $api: ident) => {
+        {
+            let mut fields = Map::new();
+            for (name, schemaref) in &$obj.properties {
+                let schemaref = schemaref.clone().unbox();
+                let inner = build_type(&schemaref, $api)?;
+                assert!(fields.insert(name.clone(), inner).is_none());
+            }
+            Ok(Typ::Struct(fields))
+        }
+    }
+}
+
 fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
     let schema = match schema {
         ReferenceOr::Reference { reference } => {
@@ -100,17 +114,11 @@ fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
-            // TODO macro? cf SchemaKind::Object
             if obj.properties.is_empty() {
-                return Ok(Typ::Any);
+                return Ok(Typ::Any)
+            } else {
+                return typ_from_objlike!(obj, api)
             }
-            let mut fields = Map::new();
-            for (name, schemaref) in &obj.properties {
-                let schemaref = schemaref.clone().unbox();
-                let inner = build_type(&schemaref, api)?;
-                assert!(fields.insert(name.clone(), inner).is_none());
-            }
-            return Ok(Typ::Struct(fields));
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -127,13 +135,7 @@ fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
             Typ::Array(Box::new(inner))
         }
         Type::Object(obj) => {
-            let mut fields = Map::new();
-            for (name, schemaref) in &obj.properties {
-                let schemaref = schemaref.clone().unbox();
-                let inner = build_type(&schemaref, api)?;
-                assert!(fields.insert(name.clone(), inner).is_none());
-            }
-            Typ::Struct(fields)
+            return typ_from_objlike!(obj, api);
         }
     };
     Ok(typ)
