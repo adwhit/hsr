@@ -25,11 +25,19 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn dereference<'a>(mayberef: &'a ReferenceOr<Schema>, api: &'a OpenAPI) -> Result<&'a Schema> {
-    let refr = match mayberef {
-        ReferenceOr::Item(item) => return Ok(item),
-        ReferenceOr::Reference { reference } => reference,
-    };
+fn validate_ref<'a>(refr: &'a str, api: &'a OpenAPI) -> Result<&'a str> {
+    let name = extract_ref_name(refr)?;
+    // Do the lookup
+    // TODO look out for circular ref
+    let _ = api
+        .components
+        .as_ref()
+        .and_then(|c| c.schemas.get(name))
+        .ok_or(Error::BadReference(refr.to_string()))?;
+    Ok(name)
+}
+
+fn extract_ref_name(refr: &str) -> Result<&str> {
     let err = Error::BadReference(refr.to_string());
     if !refr.starts_with("#") {
         return Err(err);
@@ -38,23 +46,16 @@ fn dereference<'a>(mayberef: &'a ReferenceOr<Schema>, api: &'a OpenAPI) -> Resul
     if !(parts.len() == 4 && parts[1] == "components" && parts[2] == "schemas") {
         return Err(err);
     }
-    let name = parts[3];
-
-    let innerref = api
-        .components
-        .as_ref()
-        .and_then(|c| c.schemas.get(name))
-        .ok_or(err)?;
-    dereference(innerref, api)
+    Ok(&parts[3])
 }
 
 fn make_types(api: &OpenAPI) -> Result<Map<Typ>> {
     let mut typs = Map::new();
     if let Some(component) = &api.components {
         for (name, schema) in &component.schemas {
-            let schema = dereference(schema, api)?;
             eprintln!("Processing: {}", name);
-            let typ = build_type(schema, api)?;
+            let typ = build_type(&schema, api)?;
+            println!("{:?}", typ);
             assert!(typs.insert(name.to_string(), typ).is_none());
         }
     }
@@ -70,6 +71,7 @@ enum Typ {
     Array(Box<Typ>),
     Struct(Map<Typ>),
     Any,
+    Named(String),
 }
 
 impl Typ {
@@ -87,25 +89,28 @@ impl Typ {
     }
 }
 
-fn build_type(schema: &Schema, api: &OpenAPI) -> Result<Typ> {
+fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
+    let schema = match schema {
+        ReferenceOr::Reference { reference } => {
+            let name = validate_ref(reference, api)?;
+            return Ok(Typ::Named(name.to_string()))
+        }
+        ReferenceOr::Item(item) => item,
+    };
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
             // TODO macro? cf SchemaKind::Object
             if obj.properties.is_empty() {
-                return Ok(Typ::Any)
+                return Ok(Typ::Any);
             }
             let mut fields = Map::new();
             for (name, schemaref) in &obj.properties {
                 let schemaref = schemaref.clone().unbox();
-                let schema = dereference(&schemaref, api)?;
-                let inner = build_type(schema, api)?;
-                if inner.is_complex() {
-                    return Err(Error::TooComplex(schema.clone()));
-                };
+                let inner = build_type(&schemaref, api)?;
                 assert!(fields.insert(name.clone(), inner).is_none());
             }
-            return Ok(Typ::Struct(fields))
+            return Ok(Typ::Struct(fields));
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -118,22 +123,14 @@ fn build_type(schema: &Schema, api: &OpenAPI) -> Result<Typ> {
         Type::Boolean {} => Typ::Bool,
         Type::Array(arr) => {
             let items = arr.items.clone().unbox();
-            let schema = dereference(&items, api)?;
-            let inner = build_type(schema, api)?;
-            if inner.is_complex() {
-                return Err(Error::TooComplex(schema.clone()));
-            };
-            Typ::Array(Box::new(build_type(schema, api)?))
+            let inner = build_type(&items, api)?;
+            Typ::Array(Box::new(inner))
         }
         Type::Object(obj) => {
             let mut fields = Map::new();
             for (name, schemaref) in &obj.properties {
                 let schemaref = schemaref.clone().unbox();
-                let schema = dereference(&schemaref, api)?;
-                let inner = build_type(schema, api)?;
-                if inner.is_complex() {
-                    return Err(Error::TooComplex(schema.clone()));
-                };
+                let inner = build_type(&schemaref, api)?;
                 assert!(fields.insert(name.clone(), inner).is_none());
             }
             Typ::Struct(fields)
