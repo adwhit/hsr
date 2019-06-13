@@ -1,9 +1,11 @@
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
 use derive_more::From;
 use failure::Fail;
 use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type};
+use quote::quote;
 
 pub type Map<T> = std::collections::BTreeMap<String, T>;
 
@@ -21,6 +23,10 @@ pub enum Error {
     UnsupportedKind(SchemaKind),
     #[fail(display = "Definition is too complex: {:?}", _0)]
     TooComplex(Schema),
+    #[fail(display = "Empty struct")]
+    EmptyStruct,
+    #[fail(display = "Rust does not support structural typing")]
+    NotStructurallyTyped,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -49,20 +55,34 @@ fn extract_ref_name(refr: &str) -> Result<&str> {
     Ok(&parts[3])
 }
 
-fn make_types(api: &OpenAPI) -> Result<Map<Typ>> {
+fn gather_types(api: &OpenAPI) -> Result<Map<Typ>> {
     let mut typs = Map::new();
+    // gather types defined in components
     if let Some(component) = &api.components {
         for (name, schema) in &component.schemas {
             eprintln!("Processing: {}", name);
             let typ = build_type(&schema, api)?;
-            println!("{:?}", typ);
             assert!(typs.insert(name.to_string(), typ).is_none());
         }
     }
     Ok(typs)
 }
 
-#[derive(Debug, Clone)]
+fn format_rust_types(typs: &Map<Typ>) -> Result<String> {
+    let mut buf = String::new();
+    for (name, typ) in typs {
+        let def = if let Typ::Struct(fields) = typ {
+            define_struct(name, fields)?
+        } else {
+            format!("type {} = {};", name, typ.to_string()?)
+        };
+        buf.push_str(&def);
+        buf.push_str("\n\n");
+    }
+    Ok(buf)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Typ {
     String,
     F64,
@@ -72,6 +92,17 @@ enum Typ {
     Struct(Map<Typ>),
     Any,
     Named(String),
+}
+
+fn define_struct(name: &str, elems: &Map<Typ>) -> Result<String> {
+    if elems.is_empty() {
+        return Err(Error::EmptyStruct);
+    }
+    let mut fields = String::new();
+    for (name, typ) in elems {
+        fields.push_str(&format!("    {}: {},\n", name, typ.to_string()?));
+    }
+    Ok(format!("struct {} {{\n{}}}", name, fields))
 }
 
 impl Typ {
@@ -87,27 +118,41 @@ impl Typ {
             _ => false,
         }
     }
+
+    fn to_string(&self) -> Result<String> {
+        use Typ::*;
+        let s = match self {
+            String => "String".to_string(),
+            F64 => "f64".to_string(),
+            I64 => "i64".to_string(),
+            Bool => "bool".to_string(),
+            Array(elem) => format!("Vec<{}>", elem.to_string()?),
+            Named(name) => name.to_string(),
+            // TODO handle Any properly
+            Any => "Any".to_string(),
+            Struct(_) => return Err(Error::NotStructurallyTyped),
+        };
+        Ok(s)
+    }
 }
 
 macro_rules! typ_from_objlike {
-    ($obj: ident, $api: ident) => {
-        {
-            let mut fields = Map::new();
-            for (name, schemaref) in &$obj.properties {
-                let schemaref = schemaref.clone().unbox();
-                let inner = build_type(&schemaref, $api)?;
-                assert!(fields.insert(name.clone(), inner).is_none());
-            }
-            Ok(Typ::Struct(fields))
+    ($obj: ident, $api: ident) => {{
+        let mut fields = Map::new();
+        for (name, schemaref) in &$obj.properties {
+            let schemaref = schemaref.clone().unbox();
+            let inner = build_type(&schemaref, $api)?;
+            assert!(fields.insert(name.clone(), inner).is_none());
         }
-    }
+        Ok(Typ::Struct(fields))
+    }};
 }
 
 fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
     let schema = match schema {
         ReferenceOr::Reference { reference } => {
             let name = validate_ref(reference, api)?;
-            return Ok(Typ::Named(name.to_string()))
+            return Ok(Typ::Named(name.to_string()));
         }
         ReferenceOr::Item(item) => item,
     };
@@ -115,9 +160,9 @@ fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Typ> {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
             if obj.properties.is_empty() {
-                return Ok(Typ::Any)
+                return Ok(Typ::Any);
             } else {
-                return typ_from_objlike!(obj, api)
+                return typ_from_objlike!(obj, api);
             }
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
@@ -148,8 +193,9 @@ pub fn generate_from_yaml_path(yaml: impl AsRef<Path>) -> Result<()> {
 
 pub fn generate_from_yaml(yaml: impl std::io::Read) -> Result<()> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
-    make_types(&api)?;
-    Err(Error::CodeGen)
+    let typs = gather_types(&api)?;
+    let rust_defs = format_rust_types(&typs)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -162,8 +208,10 @@ mod tests {
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
         println!("{:#?}", api);
-        let typs = make_types(&api).unwrap();
-        println!("{:?}", typs);
+
+        let typs = gather_types(&api).unwrap();
+        let rust = format_rust_types(&typs).unwrap();
+        println!("{}", rust);
     }
 
     #[test]
@@ -171,6 +219,6 @@ mod tests {
         let yaml = "example-api/petstore-expanded.yaml";
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
-        make_types(&api).unwrap();
+        gather_types(&api).unwrap();
     }
 }
