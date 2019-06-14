@@ -31,6 +31,8 @@ pub enum Error {
     EmptyStruct,
     #[fail(display = "Rust does not support structural typing")]
     NotStructurallyTyped,
+    #[fail(display = "Path is malformed: {}", _0)]
+    MalformedPath(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -110,20 +112,47 @@ impl Route {
     }
 }
 
-fn func_from_path(path: &str) -> Result<String> {
-    unimplemented!()
+enum PathSegment {
+    Literal(String),
+    Parameter(String),
+}
+
+fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
+    // TODO lazy static
+    let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
+    let param_re = Regex::new(r#"^\{([[:alpha:]]+)\}$"#).unwrap();
+    let mut segments = Vec::new();
+
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(Error::MalformedPath(path.to_string()));
+    }
+    for segment in path.split('/').skip(1) {
+        println!("{}", segment);
+        if literal_re.is_match(segment) {
+            segments.push(PathSegment::Literal(segment.to_string()))
+        } else if let Some(seg) = param_re.captures(segment) {
+            segments.push(PathSegment::Parameter(
+                seg.get(1).unwrap().as_str().to_string(),
+            ))
+        } else {
+            return Err(Error::MalformedPath(path.to_string()));
+        }
+    }
+    Ok(segments)
 }
 
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
     for (path, pathitem) in &api.paths {
         let pathitem = unwrap_ref_or(&pathitem)?;
+        let segments = analyse_path(path)?;
+        let path_func = path.to_snake_case();
         let mut pathroutes = Vec::new();
         if let Some(ref op) = pathitem.get {
             let method = Method::Get;
             let operation_id = match op.operation_id {
                 Some(ref op) => op.to_string(),
-                None => format!("{}_{}", method, func_from_path(path)?),
+                None => format!("{}_{}", method, path_func),
             };
             pathroutes.push(Route {
                 operation_id,
@@ -301,6 +330,20 @@ mod tests {
         let yaml = "example-api/petstore.yaml";
         let code = generate_from_yaml_path(yaml).unwrap();
         println!("{}", code);
+    }
+
+    #[test]
+    fn test_snake_casify() {
+        assert_eq!("/a/b/c".to_snake_case(), "a_b_c");
+        assert_eq!(
+            "/All/ThisIs/justFine".to_snake_case(),
+            "all_this_is_just_fine"
+        );
+        assert_eq!("/{someId}".to_snake_case(), "some_id");
+        assert_eq!(
+            "/123_abc{xyz\\!\"£$%^}/456 asdf".to_snake_case(),
+            "123_abc_xyz_456_asdf"
+        )
     }
 
     // #[test]
