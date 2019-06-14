@@ -100,6 +100,7 @@ impl fmt::Display for Method {
 struct Route {
     operation_id: String,
     method: Method,
+    segments: Vec<PathSegment>,
 }
 
 impl Route {
@@ -112,6 +113,7 @@ impl Route {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PathSegment {
     Literal(String),
     Parameter(String),
@@ -121,11 +123,13 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     // TODO lazy static
     let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
     let param_re = Regex::new(r#"^\{([[:alpha:]]+)\}$"#).unwrap();
-    let mut segments = Vec::new();
 
     if path.is_empty() || !path.starts_with('/') {
         return Err(Error::MalformedPath(path.to_string()));
     }
+
+    let mut segments = Vec::new();
+
     for segment in path.split('/').skip(1) {
         println!("{}", segment);
         if literal_re.is_match(segment) {
@@ -156,6 +160,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             };
             pathroutes.push(Route {
                 operation_id,
+                segments,
                 method,
             });
         }
@@ -344,6 +349,42 @@ mod tests {
             "/123_abc{xyz\\!\"£$%^}/456 asdf".to_snake_case(),
             "123_abc_xyz_456_asdf"
         )
+    }
+
+    #[test]
+    fn test_analyse_path() {
+        use PathSegment::*;
+
+        // Should fail
+        assert!(analyse_path("").is_err());
+        assert!(analyse_path("a/b").is_err());
+        assert!(analyse_path("/a/b/c/").is_err());
+        assert!(analyse_path("/a{").is_err());
+        assert!(analyse_path("/a{}").is_err());
+        assert!(analyse_path("/{}a").is_err());
+        assert!(analyse_path("/{a}a").is_err());
+
+        // TODO probably should succeed
+        assert!(analyse_path("/{test1}").is_err());
+
+        // Should succed
+        assert_eq!(
+            analyse_path("/a/b").unwrap(),
+            vec![Literal("a".into()), Literal("b".into()),]
+        );
+        assert_eq!(
+            analyse_path("/{test}").unwrap(),
+            vec![Parameter("test".into())]
+        );
+        assert_eq!(
+            analyse_path("/{a}/{b}/a/b").unwrap(),
+            vec![
+                Parameter("a".into()),
+                Parameter("b".into()),
+                Literal("a".into()),
+                Literal("b".into())
+            ]
+        );
     }
 
     // #[test]
