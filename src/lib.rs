@@ -5,10 +5,15 @@ use std::path::Path;
 use derive_more::From;
 use failure::Fail;
 use heck::SnakeCase;
-use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
 use log::{debug, info};
+use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use regex::Regex;
+
+fn ident(s: impl fmt::Display) -> Ident {
+    Ident::new(&s.to_string(), proc_macro2::Span::call_site())
+}
 
 pub type Map<T> = std::collections::BTreeMap<String, T>;
 
@@ -107,12 +112,11 @@ struct Route {
 }
 
 impl Route {
-    fn format_interface(&self) -> Result<String> {
-        let sig = format!(
-            "    fn {}(&self, {}) -> Future<{}>;",
-            self.operation_id, "test: Test", "TestResponse"
-        );
-        Ok(sig)
+    fn format_interface(&self) -> Result<TokenStream> {
+        let opid = ident(&self.operation_id);
+        Ok(quote! {
+            fn #opid(&self, test: Test) -> Future<Test>;
+        })
     }
 }
 
@@ -174,29 +178,33 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-fn format_rust_types(typs: &Map<Type>) -> Result<String> {
-    let mut buf = String::new();
+fn format_rust_types(typs: &Map<Type>) -> Result<TokenStream> {
+    let mut tokens = TokenStream::new();
     for (name, typ) in typs {
         let def = if let Type::Struct(fields) = typ {
             define_struct(name, fields)?
         } else {
-            format!("type {} = {};", name, typ.to_string()?)
+            let name = ident(name);
+            let typ = typ.to_token()?;
+            quote! {
+                type #name = #typ;
+            }
         };
-        buf.push_str(&def);
-        buf.push_str("\n\n");
+        tokens.extend(def);
     }
-    Ok(buf)
+    Ok(tokens)
 }
 
-fn format_rust_interface(routes: &Map<Vec<Route>>) -> Result<String> {
-    let mut buf = String::new();
+fn format_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
+    let mut methods = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            buf += &route.format_interface()?;
-            buf += "\n\n"
+            methods.extend(route.format_interface()?);
         }
     }
-    Ok(format!("trait Api {{\n{}\n}}", buf))
+    Ok(quote! {
+        trait Api { #methods }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -211,15 +219,22 @@ enum Type {
     Named(String),
 }
 
-fn define_struct(name: &str, elems: &Map<Type>) -> Result<String> {
+fn define_struct(name: &str, elems: &Map<Type>) -> Result<TokenStream> {
     if elems.is_empty() {
         return Err(Error::EmptyStruct);
     }
-    let mut fields = String::new();
-    for (name, typ) in elems {
-        fields.push_str(&format!("    {}: {},\n", name, typ.to_string()?));
-    }
-    Ok(format!("struct {} {{\n{}}}", name, fields))
+    let name = ident(name);
+    let field = elems.keys().map(|s| ident(s));
+    let fieldtype = elems
+        .values()
+        .map(|s| s.to_token())
+        .collect::<Result<Vec<_>>>()?;
+    let toks = quote! {
+        struct #name {
+            #(#field: #fieldtype),*
+        }
+    };
+    Ok(toks)
 }
 
 impl Type {
@@ -236,17 +251,23 @@ impl Type {
         }
     }
 
-    fn to_string(&self) -> Result<String> {
+    fn to_token(&self) -> Result<TokenStream> {
         use Type::*;
         let s = match self {
-            String => "String".to_string(),
-            F64 => "f64".to_string(),
-            I64 => "i64".to_string(),
-            Bool => "bool".to_string(),
-            Array(elem) => format!("Vec<{}>", elem.to_string()?),
-            Named(name) => name.to_string(),
+            String => quote! { String },
+            F64 => quote! { f64 },
+            I64 => quote! { i64 },
+            Bool => quote! { bool },
+            Array(elem) => {
+                let inner = elem.to_token()?;
+                quote! { Vec<#inner> }
+            }
+            Named(name) => {
+                let name = ident(name);
+                quote! { #name }
+            }
             // TODO handle Any properly
-            Any => "Any".to_string(),
+            Any => quote! { Any },
             Struct(_) => return Err(Error::NotStructurallyTyped),
         };
         Ok(s)
@@ -303,31 +324,23 @@ fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
     Ok(typ)
 }
 
-pub fn generate_from_yaml_path(yaml: impl AsRef<Path>) -> Result<String> {
+pub fn generate_from_yaml_path(yaml: impl AsRef<Path>) -> Result<TokenStream> {
     let f = fs::File::open(yaml)?;
     generate_from_yaml(f)
 }
 
-pub fn generate_from_yaml(yaml: impl std::io::Read) -> Result<String> {
+pub fn generate_from_yaml(yaml: impl std::io::Read) -> Result<TokenStream> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
     let typs = gather_types(&api)?;
     let routes = gather_routes(&api)?;
     let rust_defs = format_rust_types(&typs)?;
     let rust_trait = format_rust_interface(&routes)?;
-    let code = format!(
-        "
-// This file is autogenerated, do not modify directly
-
-// Type definitions
-
-{}
-
-// Interface definition
-
-{}
-",
-        rust_defs, rust_trait
-    );
+    let code = quote! {
+        // Type definitions
+        #rust_defs
+        // Interface definition
+        #rust_trait
+    };
     Ok(code)
 }
 
