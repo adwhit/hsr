@@ -6,6 +6,7 @@ use derive_more::From;
 use failure::Fail;
 use heck::SnakeCase;
 use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
+use log::{debug, info};
 use quote::quote;
 use regex::Regex;
 
@@ -75,7 +76,7 @@ fn gather_types(api: &OpenAPI) -> Result<Map<Type>> {
     // gather types defined in components
     if let Some(component) = &api.components {
         for (name, schema) in &component.schemas {
-            eprintln!("Processing: {}", name);
+            info!("Processing schema: {}", name);
             let typ = build_type(&schema, api)?;
             assert!(typs.insert(name.to_string(), typ).is_none());
         }
@@ -83,6 +84,7 @@ fn gather_types(api: &OpenAPI) -> Result<Map<Type>> {
     Ok(typs)
 }
 
+#[derive(Debug, Clone)]
 enum Method {
     Get,
     Post(Option<Type>),
@@ -97,6 +99,7 @@ impl fmt::Display for Method {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Route {
     operation_id: String,
     method: Method,
@@ -131,7 +134,6 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     let mut segments = Vec::new();
 
     for segment in path.split('/').skip(1) {
-        println!("{}", segment);
         if literal_re.is_match(segment) {
             segments.push(PathSegment::Literal(segment.to_string()))
         } else if let Some(seg) = param_re.captures(segment) {
@@ -148,6 +150,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
     for (path, pathitem) in &api.paths {
+        debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref_or(&pathitem)?;
         let segments = analyse_path(path)?;
         let path_func = path.to_snake_case();
@@ -158,11 +161,13 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
                 Some(ref op) => op.to_string(),
                 None => format!("{}_{}", method, path_func),
             };
-            pathroutes.push(Route {
+            let route = Route {
                 operation_id,
                 segments,
                 method,
-            });
+            };
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
         assert!(routes.insert(path.to_string(), pathroutes).is_none());
     }
@@ -363,9 +368,11 @@ mod tests {
         assert!(analyse_path("/a{}").is_err());
         assert!(analyse_path("/{}a").is_err());
         assert!(analyse_path("/{a}a").is_err());
+        assert!(analyse_path("/ a").is_err());
 
         // TODO probably should succeed
-        assert!(analyse_path("/{test1}").is_err());
+        assert!(analyse_path("/a1").is_err());
+        assert!(analyse_path("/{a1}").is_err());
 
         // Should succed
         assert_eq!(
