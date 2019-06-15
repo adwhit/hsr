@@ -115,7 +115,7 @@ impl Route {
     fn format_interface(&self) -> Result<TokenStream> {
         let opid = ident(&self.operation_id);
         Ok(quote! {
-            fn #opid(&self, test: Test) -> Future<Test>;
+            fn #opid(&self, test: Test) -> Box<::std::future::Future<Output=Test>>;
         })
     }
 }
@@ -203,7 +203,7 @@ fn format_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
         }
     }
     Ok(quote! {
-        trait Api { #methods }
+        pub trait Api { #methods }
     })
 }
 
@@ -324,24 +324,35 @@ fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
     Ok(typ)
 }
 
-pub fn generate_from_yaml_path(yaml: impl AsRef<Path>) -> Result<TokenStream> {
+pub fn generate_from_yaml(yaml: impl AsRef<Path>) -> Result<String> {
     let f = fs::File::open(yaml)?;
-    generate_from_yaml(f)
+    generate_from_yaml_source(f)
 }
 
-pub fn generate_from_yaml(yaml: impl std::io::Read) -> Result<TokenStream> {
+pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
     let typs = gather_types(&api)?;
     let routes = gather_routes(&api)?;
     let rust_defs = format_rust_types(&typs)?;
     let rust_trait = format_rust_interface(&routes)?;
     let code = quote! {
+        // TODO remove
+        pub struct Test;
         // Type definitions
         #rust_defs
         // Interface definition
         #rust_trait
     };
-    Ok(code)
+    let mut buf = Vec::new();
+    {
+        let mut config = rustfmt_nightly::Config::default();
+        config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
+        let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
+        session
+            .format(rustfmt_nightly::Input::Text(code.to_string()))
+            .unwrap();
+    }
+    Ok(String::from_utf8(buf).unwrap())
 }
 
 #[cfg(test)]

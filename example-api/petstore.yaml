@@ -10,7 +10,7 @@ paths:
   /pets:
     get:
       summary: List all pets
-      operationId: listPets
+      operationId: list_pets
       tags:
         - pets
       parameters:
@@ -56,7 +56,7 @@ paths:
   /pets/{petId}:
     get:
       summary: Info for a specific pet
-      operationId: showPetById
+      operationId: show_pet_by_id
       tags:
         - pets
       parameters:
