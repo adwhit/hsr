@@ -203,7 +203,11 @@ fn format_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
         }
     }
     Ok(quote! {
-        pub trait Api { #methods }
+        pub trait Api {
+            fn new() -> Self;
+
+            #methods
+        }
     })
 }
 

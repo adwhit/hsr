@@ -27,7 +27,7 @@
 
 ## State
 
-* Obviously most APIs have some kind of state, if only a list of users.
+* Obviously most APIs have some kind of state, if only a list of users and (hashed) passwords.
 * State should be held in a database.
 * So, can we have 'database done right'?
 * Definitely a tricker problem. Aurora is probably the model
