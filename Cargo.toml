@@ -4,3 +4,7 @@ members = [
   "jota-codegen",
   "jota-runtime"
 ]
+
+exclude = [
+  "example-api/my-api"
+]

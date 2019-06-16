@@ -1,23 +1,19 @@
 use std::future::Future;
 
-mod api {
-    include!(concat!(env!("OUT_DIR"), "/api.rs"));
-}
+use my_api;
 
 struct Api;
 
-impl api::Api for Api {
-    fn new() -> Self { Api }
+impl my_api::Api for Api {
+    fn new() -> Self {
+        Api
+    }
 
-    fn show_pet_by_id(&self, test: api::Test) -> Box<Future<Output=api::Test>> {
+    fn show_pet_by_id(&self, test: my_api::Test) -> Box<Future<Output = my_api::Test>> {
         unimplemented!()
     }
 
-    fn list_pets(&self, test: api::Test) -> Box<Future<Output=api::Test>> {
+    fn list_pets(&self, test: my_api::Test) -> Box<Future<Output = my_api::Test>> {
         unimplemented!()
     }
-}
-
-struct Handler<T: api::Api> {
-    api: T
 }

@@ -1,8 +1,8 @@
 [package]
-name = "example-api"
+name = "my-api"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
-[dependencies]
-my-api = { path = "my-api" }
+[build-dependencies]
+jota-codegen = { path = "../../jota-codegen" }
