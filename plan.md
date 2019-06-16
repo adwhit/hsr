@@ -32,3 +32,53 @@
 * So, can we have 'database done right'?
 * Definitely a tricker problem. Aurora is probably the model
 * 'Postgres, but without the bother'
+
+# Design
+
+* How exactly should codegen be done? Ideally, the only artifacts are the swagger.yaml file
+  and the implementation.
+  
+```yaml
+openapi: "3.0.0"
+info:
+  title: Some Api
+  version: 0.1
+paths:
+  /foo:
+    get:
+      summary: Get foo
+...
+```
+```rust
+use some_api;
+
+struct MyApi;
+
+impl some_api::Api for MyApi {
+    fn get_foo(id: i32) -> Box<Future<Item = some_api::Foo>> { /*..*/ }
+    // ...
+}
+```
+
+Difficulty: we obviously need to codegen the api interface locally so that the
+user can fulfill the definition. But equally, we don't want to 'hand off' this part
+of the build completely to the user, otherwise the host won't be able to check that
+the code is valid.
+
+But using a `build.rs` to do the codegen is very convenient for the user, so 
+we'd like to keep it.
+
+In other words, the host wants to work like this:
+* Receive uploaded `openapi.yaml`
+* Receive uploaded `my-api.tar.gz`
+* Generate scaffolding code (the actual server code!)
+* Place the implementation inside the codegenned directory
+* Compile the whole package
+
+Result is a standalone binary that can be run in a sandbox (and has hooks for monitoring, etc).
+
+How can we achieve this? Easy, we have two different versions of codegen, one used by the
+host, one available on `crates.io`.
+When compiled by the client, they get everything they need for functional code
+including a simple development server. When compiling on the host, we have
+all the extra stuff necessary for serverless magic (HTTPS, auth, billing etc).
