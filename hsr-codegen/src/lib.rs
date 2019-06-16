@@ -402,7 +402,7 @@ mod tests {
         assert!(analyse_path("/a1").is_err());
         assert!(analyse_path("/{a1}").is_err());
 
-        // Should succed
+        // Should succeed
         assert_eq!(
             analyse_path("/a/b").unwrap(),
             vec![Literal("a".into()), Literal("b".into()),]

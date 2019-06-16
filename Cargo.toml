@@ -1,10 +1,6 @@
 [workspace]
 members = [
   "example-api",
-  "jota-codegen",
-  "jota-runtime"
-]
-
-exclude = [
-  "example-api/my-api"
+  "hsr-codegen",
+  "hsr-runtime"
 ]

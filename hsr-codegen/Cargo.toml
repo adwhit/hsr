@@ -1,5 +1,5 @@
 [package]
-name = "jota-codegen"
+name = "hsr-codegen"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
