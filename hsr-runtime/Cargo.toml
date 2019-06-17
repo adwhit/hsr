@@ -1,7 +1,10 @@
 [package]
-name = "jota-runtime"
+name = "hsr-runtime"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+futures-preview = { version = "0.3.0-alpha.16", features = ["compat"] }
+hyper = "0.12.30"
+path-tree = "0.1.8"

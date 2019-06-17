@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_build_types_simple() {
         let yaml = "example-api/petstore.yaml";
-        let code = generate_from_yaml_path(yaml).unwrap();
+        let code = generate_from_yaml(yaml).unwrap();
         println!("{}", code);
     }
 
