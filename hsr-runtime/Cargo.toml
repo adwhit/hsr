@@ -8,3 +8,4 @@ edition = "2018"
 futures-preview = { version = "0.3.0-alpha.16", features = ["compat"] }
 hyper = "0.12.30"
 path-tree = "0.1.8"
+warp = "0.1.16"

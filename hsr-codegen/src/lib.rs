@@ -340,6 +340,8 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_defs = format_rust_types(&typs)?;
     let rust_trait = format_rust_interface(&routes)?;
     let code = quote! {
+        use hsr_runtime;
+
         // TODO remove
         pub struct Test;
         // Type definitions
