@@ -1,14 +1,17 @@
 use std::fmt;
 
-// use futures::compat::*;
+use std::sync::Arc;
+
 use futures::prelude::*;
 use futures1::prelude::Future as Future1;
-// use hyper::{Body, Chunk, Request, Response};
-use serde::{Serialize, Deserialize};
-use warp::{self, path, Filter};
+use serde::{Deserialize, Serialize};
+
+use actix_web::error::ResponseError;
+use actix_web::web::{self, Data, Json as AxJson, Path as AxPath};
+use actix_web::{App, HttpServer};
 
 #[derive(Debug, Clone, Copy)]
-struct Error;
+pub struct Error;
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -17,17 +20,20 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+impl ResponseError for Error {}
 
-// Below should be code-genned
+// ***************************************
+// ***   Below should be code-genned   ***
+// ***************************************
 
 #[derive(Serialize)]
-struct Pet;
+pub struct Pet;
 
 #[derive(Deserialize)]
-struct NewPet;
+pub struct NewPet;
 
-trait Api: Send + Sync {
-    type R1: Future<Output = Result<Pet, Error>> + Unpin + Send + 'static;
+pub trait Api: Send + Sync + 'static {
+    type R1: Future<Output = Result<Pet, Error>> + Unpin + Send + Sync + 'static;
     type R2: Future<Output = Result<Pet, Error>> + Unpin + Send + 'static;
     type R3: Future<Output = Result<Vec<Pet>, Error>> + Unpin + Send + 'static;
     fn new() -> Self;
@@ -36,26 +42,44 @@ trait Api: Send + Sync {
     fn get_all(&self) -> Self::R3;
 }
 
-fn respond<A: Api + 'static>() -> impl Filter + Send + Sync + 'static {
-    let api = std::sync::Arc::new(A::new());
-    let api1 = api.clone();
-    let api2 = api.clone();
-    warp::get2()
-        .and(path!["pet" / u32].and_then(move |id| {
-            api1.get_pet(id)
-                .compat()
-                .map(|p| warp::reply::json(&p))
-                .map_err(|e| warp::reject::custom(e))
-        }))
-        // .and(path!["pet"].and_then(move || {
-        //     api2.clone()
-        //         .get_all()
-        //         .compat()
-        //         .map(|p| warp::reply::json(&p))
-        //         .map_err(|e| warp::reject::custom(e))
-        // }))
+fn get_pet<A: Api>(
+    data: Data<Arc<A>>,
+    path: AxPath<u32>,
+) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
+    (*data).get_pet(path.into_inner()).map_ok(AxJson).compat()
 }
 
-fn serve() {
-    warp::serve(respond());
+fn create_pet<A: Api>(
+    data: Data<Arc<A>>,
+    json: AxJson<NewPet>,
+) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
+    (*data)
+        .create_pet(json.into_inner())
+        .map_ok(AxJson)
+        .compat()
+}
+
+pub fn serve<A: Api>(api: A) -> std::io::Result<()> {
+    let api = Arc::new(api);
+    HttpServer::new(move || {
+        let app = App::new()
+            .data(api.clone())
+            .service(
+            web::resource("/pets/{petId}")
+                .route(web::get().to_async(get_pet::<A>))
+                .route(web::post().to_async(create_pet::<A>)),
+        );
+        app
+    })
+    .bind("127.0.0.1:8000")?
+    .run()
+}
+
+// ***************************************
+// ***   Below should be user-impled   ***
+// ***************************************
+
+struct MyApi;
+
+impl Api for MyApi {
 }

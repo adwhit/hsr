@@ -6,8 +6,7 @@ edition = "2018"
 
 [dependencies]
 futures1 = { package = "futures", version = "0.1.27" }
-futures-preview = { version = "0.3.0-alpha.16", features = ["compat"] }
-hyper = "0.12.30"
-path-tree = "0.1.8"
-warp = "0.1.16"
-serde = { version = "1.0.92", features = ["derive"] }
+futures-preview = { version = "0.3.0-alpha.17", features = ["compat"] }
+serde = { version = "1.0.94", features = ["derive"] }
+actix-web = "1.0.3"
+actix-http = "0.2.5"
