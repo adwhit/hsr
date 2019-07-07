@@ -1,8 +1,9 @@
+#![feature(async_await)]
+
 use std::fmt;
 
-use std::sync::Arc;
-
 use futures::prelude::*;
+use futures::future::BoxFuture;
 use futures1::prelude::Future as Future1;
 use serde::{Deserialize, Serialize};
 
@@ -33,46 +34,55 @@ pub struct Pet;
 pub struct NewPet;
 
 pub trait Api: Send + Sync + 'static {
-    type R1: Future<Output = Result<Pet, Error>> + Unpin + Send + Sync + 'static;
-    type R2: Future<Output = Result<Pet, Error>> + Unpin + Send + 'static;
-    type R3: Future<Output = Result<Vec<Pet>, Error>> + Unpin + Send + 'static;
     fn new() -> Self;
-    fn get_pet(&self, pet_id: u32) -> Self::R1;
-    fn create_pet(&self, pet: NewPet) -> Self::R2;
-    fn get_all(&self) -> Self::R3;
+    fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>>;
+    fn create_pet(&self, pet: NewPet) -> BoxFuture<Result<Pet, Error>>;
+    fn get_all_pets(&self) -> BoxFuture<Result<Vec<Pet>, Error>>;
 }
 
 fn get_pet<A: Api>(
-    data: Data<Arc<A>>,
+    data: Data<A>,
     path: AxPath<u32>,
 ) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
-    (*data).get_pet(path.into_inner()).map_ok(AxJson).compat()
+    async move {
+        let pet = data.get_pet(path.into_inner()).await?;
+        Ok(AxJson(pet))
+    }.boxed().compat()
 }
 
 fn create_pet<A: Api>(
-    data: Data<Arc<A>>,
+    data: Data<A>,
     json: AxJson<NewPet>,
 ) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
-    (*data)
-        .create_pet(json.into_inner())
-        .map_ok(AxJson)
-        .compat()
+    async move {
+        let pet = data.create_pet(json.into_inner()).await?;
+        Ok(AxJson(pet))
+    }.boxed().compat()
 }
 
-pub fn serve<A: Api>(api: A) -> std::io::Result<()> {
-    let api = Arc::new(api);
+fn get_all_pets<A: Api>(
+    data: Data<A>,
+) -> impl Future1<Item = AxJson<Vec<Pet>>, Error = Error> {
+    async move {
+        let pets = data.get_all_pets().await?;
+        Ok(AxJson(pets))
+    }.boxed().compat()
+}
+
+pub fn serve<A: Api>() -> std::io::Result<()> {
+    let api = Data::new(A::new());
     HttpServer::new(move || {
         let app = App::new()
-            .data(api.clone())
+            .register_data(api.clone())
             .service(
-            web::resource("/pets/{petId}")
-                .route(web::get().to_async(get_pet::<A>))
-                .route(web::post().to_async(create_pet::<A>)),
-        );
+                web::resource("/pets/{petId}")
+                    .route(web::get().to_async(get_pet::<A>))
+                    .route(web::post().to_async(create_pet::<A>)),
+            ).route("/pets", web::get().to_async(get_all_pets::<A>));
         app
     })
-    .bind("127.0.0.1:8000")?
-    .run()
+        .bind("127.0.0.1:8000")?
+        .run()
 }
 
 // ***************************************
@@ -81,5 +91,24 @@ pub fn serve<A: Api>(api: A) -> std::io::Result<()> {
 
 struct MyApi;
 
+impl MyApi {
+    async fn query(&self) -> Result<Pet, Error> {
+        Ok(Pet)
+    }
+}
+
 impl Api for MyApi {
+    fn new() -> Self { MyApi }
+    fn get_pet(&self, _pet_id: u32) -> BoxFuture<Result<Pet, Error>> {
+        futures::future::ok(Pet).boxed()
+    }
+    fn create_pet(&self, _pet: NewPet) -> BoxFuture<Result<Pet, Error>> {
+        async { Ok(Pet) }.boxed()
+    }
+    fn get_all_pets(&self) -> BoxFuture<Result<Vec<Pet>, Error>> {
+        async move {
+            let pet = self.query().await?;
+            Ok(vec![pet])
+        }.boxed()
+    }
 }
