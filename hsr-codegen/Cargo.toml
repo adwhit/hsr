@@ -17,3 +17,6 @@ log = "0.4.6"
 rustfmt-nightly = "1.3.0"
 serde_yaml = "0.8.9"
 syn = "0.15.36"
+
+[dev-dependencies]
+diff = "0.1.11"

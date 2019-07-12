@@ -112,7 +112,7 @@ struct Route {
 }
 
 impl Route {
-    fn format_interface(&self) -> Result<TokenStream> {
+    fn generate_interface(&self) -> Result<TokenStream> {
         let opid = ident(&self.operation_id);
         Ok(quote! {
             fn #opid(&self, test: Test) -> Box<::std::future::Future<Output=Test>>;
@@ -178,7 +178,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-fn format_rust_types(typs: &Map<Type>) -> Result<TokenStream> {
+fn generate_rust_types(typs: &Map<Type>) -> Result<TokenStream> {
     let mut tokens = TokenStream::new();
     for (name, typ) in typs {
         let def = if let Type::Struct(fields) = typ {
@@ -195,15 +195,15 @@ fn format_rust_types(typs: &Map<Type>) -> Result<TokenStream> {
     Ok(tokens)
 }
 
-fn format_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
+fn generate_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
     let mut methods = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            methods.extend(route.format_interface()?);
+            methods.extend(route.generate_interface()?);
         }
     }
     Ok(quote! {
-        pub trait Api {
+        pub trait Api: Send + Sync + 'static {
             fn new() -> Self;
 
             #methods
@@ -337,8 +337,8 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
     let typs = gather_types(&api)?;
     let routes = gather_routes(&api)?;
-    let rust_defs = format_rust_types(&typs)?;
-    let rust_trait = format_rust_interface(&routes)?;
+    let rust_defs = generate_rust_types(&typs)?;
+    let rust_trait = generate_rust_interface(&routes)?;
     let code = quote! {
         use hsr_runtime;
 
@@ -349,27 +349,54 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         // Interface definition
         #rust_trait
     };
+    Ok(prettify_code(code.to_string()))
+}
+
+fn prettify_code(input: String) -> String {
     let mut buf = Vec::new();
     {
         let mut config = rustfmt_nightly::Config::default();
         config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
         session
-            .format(rustfmt_nightly::Input::Text(code.to_string()))
+            .format(rustfmt_nightly::Input::Text(input))
             .unwrap();
     }
-    Ok(String::from_utf8(buf).unwrap())
+    String::from_utf8(buf).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ezdiff(left: &str, right: &str) {
+        use diff::Result::*;
+        for d in diff::lines(left, right) {
+            match d {
+                Left(l) => println!("- {}", l),
+                Right(r) => println!("+ {}", r),
+                Both(l, _) => println!("= {}", l)
+            }
+        }
+    }
+
     #[test]
     fn test_build_types_simple() {
-        let yaml = "example-api/petstore.yaml";
+        let yaml = "../example-api/petstore.yaml";
         let code = generate_from_yaml(yaml).unwrap();
-        println!("{}", code);
+        let expect = quote! {
+            pub trait Api: Send + Sync + 'static {
+                fn new() -> Self;
+                fn get_all_pets(&self) -> BoxFuture<Result<Vec<Pet>, Error>>;
+                fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>>;
+                fn create_pet(&self, pet: NewPet) -> BoxFuture<Result<Pet, Error>>;
+            }
+        }.to_string();
+        let expect = prettify_code(expect);
+        if !code.contains(&expect) {
+            ezdiff(&code, &expect);
+            panic!("Bad diff")
+        }
     }
 
     #[test]

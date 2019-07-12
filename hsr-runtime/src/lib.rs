@@ -99,7 +99,7 @@ impl MyApi {
 
 impl Api for MyApi {
     fn new() -> Self { MyApi }
-    fn get_pet(&self, _pet_id: u32) -> BoxFuture<Result<Pet, Error>> {
+    fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>> {
         futures::future::ok(Pet).boxed()
     }
     fn create_pet(&self, _pet: NewPet) -> BoxFuture<Result<Pet, Error>> {

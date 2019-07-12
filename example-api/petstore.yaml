@@ -10,7 +10,7 @@ paths:
   /pets:
     get:
       summary: List all pets
-      operationId: list_pets
+      operationId: get_all_pets
       tags:
         - pets
       parameters:
@@ -44,6 +44,13 @@ paths:
       operationId: createPets
       tags:
         - pets
+      requestBody:
+        description: Pet to add to the store
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewPet'
       responses:
         '201':
           description: Null response
@@ -56,7 +63,7 @@ paths:
   /pets/{petId}:
     get:
       summary: Info for a specific pet
-      operationId: show_pet_by_id
+      operationId: get_pet
       tags:
         - pets
       parameters:
@@ -89,6 +96,14 @@ components:
         id:
           type: integer
           format: int64
+        name:
+          type: string
+        tag:
+          type: string
+    NewPet:
+      required:
+        - name
+      properties:
         name:
           type: string
         tag:
