@@ -2,20 +2,22 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use derive_more::From;
+use derive_more::{Display, From};
 use failure::Fail;
-use heck::SnakeCase;
+use heck::{CamelCase, SnakeCase};
 use log::{debug, info};
 use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
 
-fn ident(s: impl fmt::Display) -> Ident {
-    Ident::new(&s.to_string(), proc_macro2::Span::call_site())
+fn ident(s: impl fmt::Display) -> QIdent {
+    QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
 pub type Map<T> = std::collections::BTreeMap<String, T>;
+pub type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
+pub type IdMap<T> = std::collections::BTreeMap<Ident, T>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -43,6 +45,10 @@ pub enum Error {
     NoOperationId(String),
     #[fail(display = "TODO: {}", _0)]
     Todo(String),
+    #[fail(display = "{} is not a valid identifier", _0)]
+    BadIdentifier(String),
+    #[fail(display = "{} is not a valid type name", _0)]
+    BadTypeName(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -66,19 +72,19 @@ fn dereference<'a, T>(
     }
 }
 
-fn validate_ref_id<'a>(refr: &'a str, api: &'a OpenAPI) -> Result<&'a str> {
+fn validate_ref_id<'a>(refr: &'a str, api: &'a OpenAPI) -> Result<TypeName> {
     let name = extract_ref_name(refr)?;
     // Do the lookup. We are just checking the ref points to 'something'
     // TODO look out for circular ref
     let _ = api
         .components
         .as_ref()
-        .and_then(|c| c.schemas.get(name))
+        .and_then(|c| c.schemas.get(&name.to_string()))
         .ok_or(Error::BadReference(refr.to_string()))?;
     Ok(name)
 }
 
-fn extract_ref_name(refr: &str) -> Result<&str> {
+fn extract_ref_name(refr: &str) -> Result<TypeName> {
     let err = Error::BadReference(refr.to_string());
     if !refr.starts_with("#") {
         return Err(err);
@@ -87,17 +93,18 @@ fn extract_ref_name(refr: &str) -> Result<&str> {
     if !(parts.len() == 4 && parts[1] == "components" && parts[2] == "schemas") {
         return Err(err);
     }
-    Ok(&parts[3])
+    TypeName::new(parts[3].to_string())
 }
 
-fn gather_types(api: &OpenAPI) -> Result<Map<Type>> {
-    let mut typs = Map::new();
+fn gather_types(api: &OpenAPI) -> Result<TypeMap<Type>> {
+    let mut typs = TypeMap::new();
     // gather types defined in components
     if let Some(component) = &api.components {
         for (name, schema) in &component.schemas {
             info!("Processing schema: {}", name);
+            let typename = TypeName::new(name.clone())?;
             let typ = build_type(&schema, api)?;
-            assert!(typs.insert(name.to_string(), typ).is_none());
+            assert!(typs.insert(typename, typ).is_none());
         }
     }
     Ok(typs)
@@ -118,10 +125,14 @@ impl fmt::Display for Method {
     }
 }
 
+// Route contains all the information necessary to contruct the API
+// If it has been constructed, the route is logically sound
 #[derive(Debug, Clone)]
 struct Route {
-    operation_id: String,
+    operation_id: Ident,
     method: Method,
+    path_args: Vec<(Ident, Type)>,
+    query_args: Vec<(Ident, Type)>,
     segments: Vec<PathSegment>,
 }
 
@@ -129,8 +140,36 @@ impl Route {
     fn generate_interface(&self) -> Result<TokenStream> {
         let opid = ident(&self.operation_id);
         Ok(quote! {
-            fn #opid(&self, test: Test) -> Box<::std::future::Future<Output=Test>>;
+            fn #opid(&self, test: Test) -> BoxFuture<Test>;
         })
+    }
+}
+
+/// A string which is a valid identifier (snake_case)
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
+struct Ident(String);
+
+impl Ident {
+    fn new(val: String) -> Result<Ident> {
+        if val == val.to_snake_case() {
+            Ok(Ident(val))
+        } else {
+            Err(Error::BadIdentifier(val))
+        }
+    }
+}
+
+/// A string which is a valid name for type (CamelCase)
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
+struct TypeName(String);
+
+impl TypeName {
+    fn new(val: String) -> Result<Self> {
+        if val == val.to_camel_case() {
+            Ok(TypeName(val))
+        } else {
+            Err(Error::BadTypeName(val))
+        }
     }
 }
 
@@ -176,11 +215,13 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
         if let Some(ref op) = pathitem.get {
             let method = Method::Get;
             let operation_id = match op.operation_id {
-                Some(ref op) => op.to_snake_case(),
+                Some(ref op) => Ident::new(op.to_snake_case())?,
                 None => return Err(Error::NoOperationId(path.clone())),
             };
             let route = Route {
                 operation_id,
+                path_args: vec![],
+                query_args: vec![],
                 segments: segments.clone(),
                 method,
             };
@@ -189,7 +230,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
         }
         if let Some(ref op) = pathitem.post {
             let operation_id = match op.operation_id {
-                Some(ref op) => op.to_snake_case(),
+                Some(ref op) => Ident::new(op.to_snake_case())?,
                 None => return Err(Error::NoOperationId(path.clone())),
             };
             let body = op
@@ -214,6 +255,8 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             let method = Method::Post(build_type(&ref_or_schema, api)?);
             let route = Route {
                 operation_id,
+                path_args: vec![],
+                query_args: vec![],
                 segments: segments.clone(),
                 method,
             };
@@ -225,13 +268,13 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-fn generate_rust_types(typs: &Map<Type>) -> Result<TokenStream> {
+fn generate_rust_types(typs: &TypeMap<Type>) -> Result<TokenStream> {
     let mut tokens = TokenStream::new();
-    for (name, typ) in typs {
+    for (typename, typ) in typs {
         let def = if let Type::Struct(fields) = typ {
-            define_struct(name, fields)?
+            define_struct(typename, fields)?
         } else {
-            let name = ident(name);
+            let name = ident(typename);
             let typ = typ.to_token()?;
             quote! {
                 type #name = #typ;
@@ -267,10 +310,10 @@ enum Type {
     Array(Box<Type>),
     Struct(Map<Type>),
     Any,
-    Named(String),
+    Named(TypeName),
 }
 
-fn define_struct(name: &str, elems: &Map<Type>) -> Result<TokenStream> {
+fn define_struct(name: &TypeName, elems: &Map<Type>) -> Result<TokenStream> {
     if elems.is_empty() {
         return Err(Error::EmptyStruct);
     }
@@ -340,8 +383,8 @@ macro_rules! typ_from_objlike {
 fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
-            let id = validate_ref_id(reference, api)?;
-            return Ok(Type::Named(id.to_string()));
+            let name = validate_ref_id(reference, api)?;
+            return Ok(Type::Named(name));
         }
         ReferenceOr::Item(item) => item,
     };
