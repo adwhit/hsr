@@ -134,13 +134,87 @@ struct Route {
     path_args: Vec<(Ident, Type)>,
     query_args: Vec<(Ident, Type)>,
     segments: Vec<PathSegment>,
+    return_ty: Option<Type>,
+}
+
+fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+    let id = ident(id);
+    let ty = ty.to_token()?;
+    Ok(quote! {
+        #id: #ty
+    })
 }
 
 impl Route {
+    fn new(
+        path: &str,
+        method: Method,
+        operation_id: &Option<String>,
+        parameters: &[ReferenceOr<openapiv3::Parameter>],
+        api: &OpenAPI,
+    ) -> Result<Route> {
+        let segments = analyse_path(path)?;
+        let operation_id = match operation_id {
+            Some(ref op) => Ident::new(op.to_snake_case()),
+            None => Err(Error::NoOperationId(path.into())),
+        }?;
+        let mut path_args = vec![];
+        let mut query_args = vec![];
+        for parameter in parameters {
+            use openapiv3::Parameter::*;
+            let parameter = dereference(parameter, api.components.as_ref().map(|c| &c.parameters))?;
+            match parameter {
+                // TODO what do the rest of the args do?
+                Path { parameter_data, .. } => {
+                    let id = Ident::new(parameter_data.name.clone())?;
+                    let ty = match &parameter_data.format {
+                        openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
+                            build_type(ref_or_schema, api)?
+                        }
+                        _content => unimplemented!(),
+                    };
+                    // TODO validate against path segments
+                    path_args.push((id, ty));
+                }
+                Query { parameter_data, .. } => {
+                    let id = Ident::new(parameter_data.name.clone())?;
+                    let ty = match &parameter_data.format {
+                        openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
+                            build_type(ref_or_schema, api)?
+                        }
+                        _content => unimplemented!(),
+                    };
+                    query_args.push((id, ty));
+                }
+                _ => unimplemented!(),
+            }
+            // match parameter
+        }
+        Ok(Route {
+            operation_id,
+            path_args,
+            query_args,
+            segments,
+            method,
+            return_ty: None,
+        })
+    }
+
     fn generate_interface(&self) -> Result<TokenStream> {
         let opid = ident(&self.operation_id);
+        let paths = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| id_ty_pair(id, ty))
+            .collect::<Result<Vec<_>>>()?;
+        let queries = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| id_ty_pair(id, ty))
+            .collect::<Result<Vec<_>>>()?;
+
         Ok(quote! {
-            fn #opid(&self, test: Test) -> BoxFuture<Test>;
+            fn #opid(&self, #(#paths,)* #(#queries,)*) -> BoxFuture<Test>;
         })
     }
 }
@@ -201,6 +275,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
             return Err(Error::MalformedPath(path.to_string()));
         }
     }
+    // TODO check for duplicates
     Ok(segments)
 }
 
@@ -210,29 +285,13 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     for (path, pathitem) in &api.paths {
         debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref(&pathitem)?;
-        let segments = analyse_path(path)?;
         let mut pathroutes = Vec::new();
         if let Some(ref op) = pathitem.get {
-            let method = Method::Get;
-            let operation_id = match op.operation_id {
-                Some(ref op) => Ident::new(op.to_snake_case())?,
-                None => return Err(Error::NoOperationId(path.clone())),
-            };
-            let route = Route {
-                operation_id,
-                path_args: vec![],
-                query_args: vec![],
-                segments: segments.clone(),
-                method,
-            };
+            let route = Route::new(path, Method::Get, &op.operation_id, &op.parameters, api)?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
         if let Some(ref op) = pathitem.post {
-            let operation_id = match op.operation_id {
-                Some(ref op) => Ident::new(op.to_snake_case())?,
-                None => return Err(Error::NoOperationId(path.clone())),
-            };
             let body = op
                 .request_body
                 .as_ref()
@@ -252,14 +311,13 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
                 .schema
                 .as_ref()
                 .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-            let method = Method::Post(build_type(&ref_or_schema, api)?);
-            let route = Route {
-                operation_id,
-                path_args: vec![],
-                query_args: vec![],
-                segments: segments.clone(),
-                method,
-            };
+            let route = Route::new(
+                path,
+                Method::Post(build_type(&ref_or_schema, api)?),
+                &op.operation_id,
+                &op.parameters,
+                api,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
@@ -308,6 +366,7 @@ enum Type {
     I64,
     Bool,
     Array(Box<Type>),
+    // TODO not sure this should be part of this enum
     Struct(Map<Type>),
     Any,
     Named(TypeName),
