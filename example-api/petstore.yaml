@@ -10,7 +10,7 @@ paths:
   /pets:
     get:
       summary: List all pets
-      operationId: get_all_pets
+      operationId: getAllPets
       tags:
         - pets
       parameters:
@@ -41,7 +41,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     post:
       summary: Create a pet
-      operationId: createPets
+      operationId: createPet
       tags:
         - pets
       requestBody:
@@ -63,7 +63,7 @@ paths:
   /pets/{petId}:
     get:
       summary: Info for a specific pet
-      operationId: get_pet
+      operationId: getPet
       tags:
         - pets
       parameters:

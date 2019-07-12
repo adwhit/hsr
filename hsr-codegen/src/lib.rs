@@ -39,11 +39,15 @@ pub enum Error {
     NotStructurallyTyped,
     #[fail(display = "Path is malformed: {}", _0)]
     MalformedPath(String),
+    #[fail(display = "No operation id given for route {}", _0)]
+    NoOperationId(String),
+    #[fail(display = "TODO: {}", _0)]
+    Todo(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn unwrap_ref_or<T>(item: &ReferenceOr<T>) -> Result<&T> {
+fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
     match item {
         ReferenceOr::Item(item) => Ok(item),
         ReferenceOr::Reference { reference } => {
@@ -52,9 +56,19 @@ fn unwrap_ref_or<T>(item: &ReferenceOr<T>) -> Result<&T> {
     }
 }
 
-fn validate_ref<'a>(refr: &'a str, api: &'a OpenAPI) -> Result<&'a str> {
+fn dereference<'a, T>(
+    refr: &'a ReferenceOr<T>,
+    lookup: Option<&'a Map<ReferenceOr<T>>>,
+) -> Result<&'a T> {
+    match refr {
+        ReferenceOr::Reference { reference } => unimplemented!(),
+        ReferenceOr::Item(item) => Ok(item),
+    }
+}
+
+fn validate_ref_id<'a>(refr: &'a str, api: &'a OpenAPI) -> Result<&'a str> {
     let name = extract_ref_name(refr)?;
-    // Do the lookup
+    // Do the lookup. We are just checking the ref points to 'something'
     // TODO look out for circular ref
     let _ = api
         .components
@@ -92,7 +106,7 @@ fn gather_types(api: &OpenAPI) -> Result<Map<Type>> {
 #[derive(Debug, Clone)]
 enum Method {
     Get,
-    Post(Option<Type>),
+    Post(Type),
 }
 
 impl fmt::Display for Method {
@@ -153,21 +167,54 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
 
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
+    println!("{:?}", api.paths.keys());
     for (path, pathitem) in &api.paths {
         debug!("Processing path: {:?}", path);
-        let pathitem = unwrap_ref_or(&pathitem)?;
+        let pathitem = unwrap_ref(&pathitem)?;
         let segments = analyse_path(path)?;
-        let path_func = path.to_snake_case();
         let mut pathroutes = Vec::new();
         if let Some(ref op) = pathitem.get {
             let method = Method::Get;
             let operation_id = match op.operation_id {
-                Some(ref op) => op.to_string(),
-                None => format!("{}_{}", method, path_func),
+                Some(ref op) => op.to_snake_case(),
+                None => return Err(Error::NoOperationId(path.clone())),
             };
             let route = Route {
                 operation_id,
-                segments,
+                segments: segments.clone(),
+                method,
+            };
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
+        }
+        if let Some(ref op) = pathitem.post {
+            let operation_id = match op.operation_id {
+                Some(ref op) => op.to_snake_case(),
+                None => return Err(Error::NoOperationId(path.clone())),
+            };
+            let body = op
+                .request_body
+                .as_ref()
+                .ok_or_else(|| Error::Todo("'post' request has no body".into()))
+                .and_then(|body| {
+                    dereference(body, api.components.as_ref().map(|c| &c.request_bodies))
+                })?;
+            if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
+                return Err(Error::Todo(
+                    "Request body must by application/json only".into(),
+                ));
+            }
+            let ref_or_schema = body
+                .content
+                .get("application/json")
+                .unwrap()
+                .schema
+                .as_ref()
+                .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+            let method = Method::Post(build_type(&ref_or_schema, api)?);
+            let route = Route {
+                operation_id,
+                segments: segments.clone(),
                 method,
             };
             debug!("Add route: {:?}", route);
@@ -290,11 +337,11 @@ macro_rules! typ_from_objlike {
     }};
 }
 
-fn build_type(schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
-    let schema = match schema {
+fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
+    let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
-            let name = validate_ref(reference, api)?;
-            return Ok(Type::Named(name.to_string()));
+            let id = validate_ref_id(reference, api)?;
+            return Ok(Type::Named(id.to_string()));
         }
         ReferenceOr::Item(item) => item,
     };
@@ -358,9 +405,7 @@ fn prettify_code(input: String) -> String {
         let mut config = rustfmt_nightly::Config::default();
         config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
-        session
-            .format(rustfmt_nightly::Input::Text(input))
-            .unwrap();
+        session.format(rustfmt_nightly::Input::Text(input)).unwrap();
     }
     String::from_utf8(buf).unwrap()
 }
@@ -369,15 +414,19 @@ fn prettify_code(input: String) -> String {
 mod tests {
     use super::*;
 
-    fn ezdiff(left: &str, right: &str) {
+    fn assert_diff(left: &str, right: &str) {
         use diff::Result::*;
+        if left.contains(&right) {
+            return;
+        }
         for d in diff::lines(left, right) {
             match d {
                 Left(l) => println!("- {}", l),
                 Right(r) => println!("+ {}", r),
-                Both(l, _) => println!("= {}", l)
+                Both(l, _) => println!("= {}", l),
             }
         }
+        panic!("Bad diff")
     }
 
     #[test]
@@ -391,12 +440,10 @@ mod tests {
                 fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>>;
                 fn create_pet(&self, pet: NewPet) -> BoxFuture<Result<Pet, Error>>;
             }
-        }.to_string();
-        let expect = prettify_code(expect);
-        if !code.contains(&expect) {
-            ezdiff(&code, &expect);
-            panic!("Bad diff")
         }
+        .to_string();
+        let expect = prettify_code(expect);
+        assert_diff(&code, &expect);
     }
 
     #[test]
