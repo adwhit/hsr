@@ -17,10 +17,10 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
-pub type Map<T> = std::collections::BTreeMap<String, T>;
-pub type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
-pub type IdMap<T> = std::collections::BTreeMap<Ident, T>;
-pub type Set<T> = std::collections::BTreeSet<T>;
+type Map<T> = std::collections::BTreeMap<String, T>;
+type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
+type IdMap<T> = std::collections::BTreeMap<Ident, T>;
+type Set<T> = std::collections::BTreeSet<T>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -678,7 +678,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> Result<TokenStream> {
 
     let server = quote! {
         pub fn serve<A: Api>() -> std::io::Result<()> {
-            let api = Data::new(A::new());
+            let api = AxData::new(A::new());
             HttpServer::new(move || {
                 App::new()
                     .register_data(api.clone())
@@ -713,6 +713,10 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_dispatchers = generate_rust_dispatchers(&routes)?;
     let rust_server = generate_rust_server(&routes)?;
     let code = quote! {
+        use actix_web::{App, HttpServer, web};
+        use actix_web::web::{Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+        use futures1::Future as Future1;
+        use futures::BoxFuture;
         // Type definitions
         #rust_defs
         // Interface definition
@@ -723,6 +727,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         #rust_server
     };
     Ok(prettify_code(code.to_string()))
+    // Ok(code.to_string())
 }
 
 fn prettify_code(input: String) -> String {
@@ -734,7 +739,12 @@ fn prettify_code(input: String) -> String {
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
         session.format(rustfmt_nightly::Input::Text(input)).unwrap();
     }
-    String::from_utf8(buf).unwrap()
+    let mut s = String::from_utf8(buf).unwrap();
+    // TODO no idea why this is necessary but... it is
+    if s.starts_with("stdin:\n\n") {
+        s = s.split_off(8);
+    }
+    s
 }
 
 #[cfg(test)]
@@ -830,7 +840,7 @@ mod tests {
             }
 
             pub fn serve<A: Api>() -> std::io::Result<()> {
-                let api = Data::new(A::new());
+                let api = AxData::new(A::new());
                 HttpServer::new(move || {
                     App::new()
                         .register_data(api.clone())

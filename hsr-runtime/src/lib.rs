@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use futures::prelude::*;
 use futures::future::BoxFuture;
+use futures::prelude::*;
 use futures1::prelude::Future as Future1;
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +49,9 @@ fn get_pet<A: Api>(
     async move {
         let pet = data.get_pet(path.into_inner()).await?;
         Ok(AxJson(pet))
-    }.boxed().compat()
+    }
+        .boxed()
+        .compat()
 }
 
 fn create_pet<A: Api>(
@@ -59,16 +61,18 @@ fn create_pet<A: Api>(
     async move {
         let pet = data.create_pet(json.into_inner()).await?;
         Ok(AxJson(pet))
-    }.boxed().compat()
+    }
+        .boxed()
+        .compat()
 }
 
-fn get_all_pets<A: Api>(
-    data: Data<A>,
-) -> impl Future1<Item = AxJson<Vec<Pet>>, Error = Error> {
+fn get_all_pets<A: Api>(data: Data<A>) -> impl Future1<Item = AxJson<Vec<Pet>>, Error = Error> {
     async move {
         let pets = data.get_all_pets().await?;
         Ok(AxJson(pets))
-    }.boxed().compat()
+    }
+        .boxed()
+        .compat()
 }
 
 pub fn serve<A: Api>() -> std::io::Result<()> {
@@ -80,11 +84,12 @@ pub fn serve<A: Api>() -> std::io::Result<()> {
                 web::resource("/pets/{petId}")
                     .route(web::get().to_async(get_pet::<A>))
                     .route(web::post().to_async(create_pet::<A>)),
-            ).route("/pets", web::get().to_async(get_all_pets::<A>));
+            )
+            .route("/pets", web::get().to_async(get_all_pets::<A>));
         app
     })
-        .bind("127.0.0.1:8000")?
-        .run()
+    .bind("127.0.0.1:8000")?
+    .run()
 }
 
 // ***************************************
@@ -100,7 +105,9 @@ impl MyApi {
 }
 
 impl Api for MyApi {
-    fn new() -> Self { MyApi }
+    fn new() -> Self {
+        MyApi
+    }
     fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>> {
         futures::future::ok(Pet).boxed()
     }
@@ -111,6 +118,7 @@ impl Api for MyApi {
         async move {
             let pet = self.query().await?;
             Ok(vec![pet])
-        }.boxed()
+        }
+            .boxed()
     }
 }

@@ -6,3 +6,6 @@ edition = "2018"
 
 [build-dependencies]
 hsr-codegen = { path = "../hsr-codegen" }
+
+[dependencies]
+actix-web = "1.0.3"
