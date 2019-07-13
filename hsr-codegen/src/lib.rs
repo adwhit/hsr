@@ -4,9 +4,9 @@ use std::path::Path;
 
 use derive_more::{Display, From};
 use failure::Fail;
-use heck::{CamelCase, SnakeCase};
+use heck::{CamelCase, MixedCase, SnakeCase};
 use log::{debug, info};
-use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
+use openapiv3::{MediaType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
@@ -18,6 +18,7 @@ fn ident(s: impl fmt::Display) -> QIdent {
 pub type Map<T> = std::collections::BTreeMap<String, T>;
 pub type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
 pub type IdMap<T> = std::collections::BTreeMap<Ident, T>;
+pub type Set<T> = std::collections::BTreeSet<T>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -151,11 +152,12 @@ impl Route {
         method: Method,
         operation_id: &Option<String>,
         parameters: &[ReferenceOr<openapiv3::Parameter>],
+        responses: &openapiv3::Responses,
         api: &OpenAPI,
     ) -> Result<Route> {
         let segments = analyse_path(path)?;
         let operation_id = match operation_id {
-            Some(ref op) => Ident::new(op.to_snake_case()),
+            Some(ref op) => Ident::new(op),
             None => Err(Error::NoOperationId(path.into())),
         }?;
         let mut path_args = vec![];
@@ -163,10 +165,11 @@ impl Route {
         for parameter in parameters {
             use openapiv3::Parameter::*;
             let parameter = dereference(parameter, api.components.as_ref().map(|c| &c.parameters))?;
+            // TODO lots of missing impls here
             match parameter {
                 // TODO what do the rest of the args do?
                 Path { parameter_data, .. } => {
-                    let id = Ident::new(parameter_data.name.clone())?;
+                    let id = Ident::new(&parameter_data.name)?;
                     let ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api)?
@@ -177,7 +180,7 @@ impl Route {
                     path_args.push((id, ty));
                 }
                 Query { parameter_data, .. } => {
-                    let id = Ident::new(parameter_data.name.clone())?;
+                    let id = Ident::new(&parameter_data.name)?;
                     let ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api)?
@@ -188,15 +191,53 @@ impl Route {
                 }
                 _ => unimplemented!(),
             }
-            // match parameter
         }
+
+        // check responses are valid status codes
+        let responses_are_valid = responses
+            .responses
+            .keys()
+            .map(|k| {
+                k.parse()
+                    .map_err(|_| Error::Todo(format!("Invalid status code: {}", k)))
+            })
+            .collect::<Result<Set<u16>>>()?;
+        // look for success status
+        let success_responses = responses_are_valid
+            .iter()
+            .filter(|&v| *v >= 200 && *v < 300)
+            .collect::<Vec<_>>();
+        if success_responses.len() != 1 {
+            return Err(Error::Todo("Expeced exactly one 'success' status".into()));
+        }
+        let status = success_responses[0].to_string();
+        let ref_or_resp = &responses.responses[&status];
+        let resp = dereference(ref_or_resp, api.components.as_ref().map(|c| &c.responses))?;
+        if !resp.headers.is_empty() {
+            return Err(Error::Todo("response headers not supported".into()));
+        }
+        if !resp.links.is_empty() {
+            return Err(Error::Todo("response headers not supported".into()));
+        }
+        if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
+            return Err(Error::Todo(
+                "content type must be 'application/json'".into(),
+            ));
+        }
+        // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
+        let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
+            .schema
+            .as_ref()
+            .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+        let return_ty = build_type(&ref_or_schema, api)?;
+
         Ok(Route {
             operation_id,
             path_args,
             query_args,
             segments,
             method,
-            return_ty: None,
+            return_ty: Some(return_ty),
         })
     }
 
@@ -224,11 +265,16 @@ impl Route {
 struct Ident(String);
 
 impl Ident {
-    fn new(val: String) -> Result<Ident> {
-        if val == val.to_snake_case() {
-            Ok(Ident(val))
+    fn new(val: &str) -> Result<Ident> {
+        // Check the identifier string in valid.
+        // We use snake_case internally, but additionally allow mixedCase identifiers
+        // to be passed, since this is common in JS world
+        let snake = val.to_snake_case();
+        let mixed = val.to_mixed_case();
+        if val == snake || val == mixed {
+            Ok(Ident(snake))
         } else {
-            Err(Error::BadIdentifier(val))
+            Err(Error::BadIdentifier(val.to_string()))
         }
     }
 }
@@ -287,7 +333,14 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
         let pathitem = unwrap_ref(&pathitem)?;
         let mut pathroutes = Vec::new();
         if let Some(ref op) = pathitem.get {
-            let route = Route::new(path, Method::Get, &op.operation_id, &op.parameters, api)?;
+            let route = Route::new(
+                path,
+                Method::Get,
+                &op.operation_id,
+                &op.parameters,
+                &op.responses,
+                api,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
@@ -316,6 +369,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
                 Method::Post(build_type(&ref_or_schema, api)?),
                 &op.operation_id,
                 &op.parameters,
+                &op.responses,
                 api,
             )?;
             debug!("Add route: {:?}", route);
@@ -439,6 +493,7 @@ macro_rules! typ_from_objlike {
     }};
 }
 
+// TODO this probably doesn't need to accept the whole API object
 fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
@@ -477,7 +532,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
     Ok(typ)
 }
 
-pub fn generate_from_yaml(yaml: impl AsRef<Path>) -> Result<String> {
+pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
     let f = fs::File::open(yaml)?;
     generate_from_yaml_source(f)
 }
@@ -534,7 +589,7 @@ mod tests {
     #[test]
     fn test_build_types_simple() {
         let yaml = "../example-api/petstore.yaml";
-        let code = generate_from_yaml(yaml).unwrap();
+        let code = generate_from_yaml_file(yaml).unwrap();
         let expect = quote! {
             pub trait Api: Send + Sync + 'static {
                 fn new() -> Self;
