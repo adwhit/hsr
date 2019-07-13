@@ -146,6 +146,22 @@ fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
     })
 }
 
+fn id_pathty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+    let id = ident(id);
+    let ty = ty.to_token()?;
+    Ok(quote! {
+        #id: Path<#ty>
+    })
+}
+
+fn id_queryty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+    let id = ident(id);
+    let ty = ty.to_token()?;
+    Ok(quote! {
+        #id: Query<#ty>
+    })
+}
+
 impl Route {
     fn new(
         path: &str,
@@ -276,6 +292,51 @@ impl Route {
         Ok(quote! {
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<Result<#rtn>>;
         })
+    }
+
+    fn generate_dispatcher(&self) -> Result<TokenStream> {
+        // TODO lots of duplication with interface function
+        let opid = ident(&self.operation_id);
+        let paths = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| id_pathty_pair(id, ty))
+            .collect::<Result<Vec<_>>>()?;
+        let queries = self
+            .query_args
+            .iter()
+            .map(|(id, ty)| id_queryty_pair(id, ty))
+            .collect::<Result<Vec<_>>>()?;
+        let body_arg = match self.method {
+            Method::Get | Method::Post(None) => quote! {},
+            Method::Post(Some(ref body)) => {
+                let name = if let Type::Named(typename) = body {
+                    ident(typename.to_string().to_snake_case())
+                } else {
+                    ident("payload")
+                };
+                let ty = body.to_token()?;
+                quote! { #name: AxJson<#ty>, }
+            }
+        };
+        let rtn = match &self.return_ty {
+            Some(ty) => ty.to_token()?,
+            None => quote! { () },
+        };
+        let code = quote! {
+            fn #opid<A: Api>(
+                data: Data<A>,
+                #(#paths,)*
+                #(#queries,)*
+                #body_arg
+            ) -> impl Future1<Item = AxJson<#rtn>, Error = Error> {
+                async move {
+                    let rtn = data.#opid().await?;
+                    Ok(AxJson(rtn))
+                }.boxed().compat()
+            }
+        };
+        Ok(code)
     }
 }
 
@@ -434,6 +495,16 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
     })
 }
 
+fn generate_rust_dispatchers(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
+    let mut dispatchers = TokenStream::new();
+    for (_, route_methods) in routes {
+        for route in route_methods {
+            dispatchers.extend(route.generate_dispatcher()?);
+        }
+    }
+    Ok(quote! {#dispatchers})
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Type {
     String,
@@ -522,12 +593,11 @@ macro_rules! impl_objlike {
                 &self.required
             }
         }
-    }
+    };
 }
 
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
-
 
 fn type_from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Type> {
     let mut fields = Map::new();
@@ -593,15 +663,14 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let routes = gather_routes(&api)?;
     let rust_defs = generate_rust_types(&typs)?;
     let rust_trait = generate_rust_interface(&routes)?;
+    let rust_dispatchers = generate_rust_dispatchers(&routes)?;
     let code = quote! {
-        use hsr_runtime;
-
-        // TODO remove
-        pub struct Test;
         // Type definitions
         #rust_defs
         // Interface definition
         #rust_trait
+        // Dispatcher definitions
+        #rust_dispatchers
     };
     Ok(prettify_code(code.to_string()))
 }
@@ -611,6 +680,7 @@ fn prettify_code(input: String) -> String {
     {
         let mut config = rustfmt_nightly::Config::default();
         config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
+        config.set().edition(rustfmt_nightly::Edition::Edition2018);
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
         session.format(rustfmt_nightly::Input::Text(input)).unwrap();
     }
@@ -620,6 +690,7 @@ fn prettify_code(input: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yansi::Paint;
 
     fn assert_diff(left: &str, right: &str) {
         use diff::Result::*;
@@ -628,8 +699,8 @@ mod tests {
         }
         for d in diff::lines(left, right) {
             match d {
-                Left(l) => println!("- {}", l),
-                Right(r) => println!("+ {}", r),
+                Left(l) => println!("{}", Paint::red(format!("- {}", l))),
+                Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
                 Both(l, _) => println!("= {}", l),
             }
         }
@@ -642,6 +713,10 @@ mod tests {
         let yaml = "../example-api/petstore.yaml";
         let code = generate_from_yaml_file(yaml).unwrap();
         let expect = quote! {
+            struct Error {
+                code: i64,
+                message: String
+            }
             struct NewPet {
                 name: String,
                 tag: Option<String>
@@ -657,6 +732,12 @@ mod tests {
                 fn get_all_pets(&self, limit: i64) -> BoxFuture<Result<Pets>>;
                 fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<()>>;
                 fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet>>;
+            }
+            fn get_all_pets<A: Api>(data: Data<A>, limit: Query<i64>) -> impl Future1<Item = AxJson<Pets>, Error = Error> {
+                async move {
+                    let rtn = data.get_all_pets().await?;
+                    Ok(AxJson(rtn))
+                }.boxed().compat()
             }
         }
         .to_string();
