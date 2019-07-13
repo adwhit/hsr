@@ -20,3 +20,4 @@ syn = "0.15.36"
 
 [dev-dependencies]
 diff = "0.1.11"
+env_logger = "0.6.2"

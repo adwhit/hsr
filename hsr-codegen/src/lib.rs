@@ -217,19 +217,22 @@ impl Route {
             return Err(Error::Todo("response headers not supported".into()));
         }
         if !resp.links.is_empty() {
-            return Err(Error::Todo("response headers not supported".into()));
+            return Err(Error::Todo("response links not supported".into()));
         }
-        if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
+        let return_ty = if resp.content.is_empty() {
+            None
+        } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
             return Err(Error::Todo(
                 "content type must be 'application/json'".into(),
             ));
-        }
-        // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
-        let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
-            .schema
-            .as_ref()
-            .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-        let return_ty = build_type(&ref_or_schema, api)?;
+        } else {
+            // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
+            let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
+                .schema
+                .as_ref()
+                .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+            Some(build_type(&ref_or_schema, api)?)
+        };
 
         Ok(Route {
             operation_id,
@@ -237,7 +240,7 @@ impl Route {
             query_args,
             segments,
             method,
-            return_ty: Some(return_ty),
+            return_ty
         })
     }
 
@@ -253,9 +256,13 @@ impl Route {
             .iter()
             .map(|(id, ty)| id_ty_pair(id, ty))
             .collect::<Result<Vec<_>>>()?;
+        let rtn = match &self.return_ty {
+            Some(ty) => ty.to_token()?,
+            None => quote! { () }
+        };
 
         Ok(quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)*) -> BoxFuture<Test>;
+            fn #opid(&self, #(#paths,)* #(#queries,)*) -> BoxFuture<#rtn>;
         })
     }
 }
@@ -327,7 +334,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
 
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
-    println!("{:?}", api.paths.keys());
+    debug!("Found paths: {:?}", api.paths.keys());
     for (path, pathitem) in &api.paths {
         debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref(&pathitem)?;
@@ -375,7 +382,8 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
-        assert!(routes.insert(path.to_string(), pathroutes).is_none());
+        let is_duped_key = routes.insert(path.to_string(), pathroutes).is_some();
+        assert!(!is_duped_key);
     }
     Ok(routes)
 }
@@ -588,6 +596,7 @@ mod tests {
 
     #[test]
     fn test_build_types_simple() {
+        let _ = env_logger::init();
         let yaml = "../example-api/petstore.yaml";
         let code = generate_from_yaml_file(yaml).unwrap();
         let expect = quote! {
