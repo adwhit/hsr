@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -159,7 +161,7 @@ impl Route {
             let parameter = dereference(parameter, api.components.as_ref().map(|c| &c.parameters))?;
             // TODO lots of missing impls here
             match parameter {
-                // TODO what do the rest of the args do?
+                // TODO what do the rest of the args do? (the .. ones)
                 Path { parameter_data, .. } => {
                     if !parameter_data.required {
                         return Err(Error::Todo(format!(
@@ -177,6 +179,7 @@ impl Route {
                     // TODO validate against path segments
                     path_args.push((id, ty));
                 }
+
                 Query { parameter_data, .. } => {
                     let id = Ident::new(&parameter_data.name)?;
                     let mut ty = match &parameter_data.format {
@@ -344,14 +347,6 @@ impl Route {
         };
         Ok(code)
     }
-}
-
-fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
-    let id = ident(id);
-    let ty = ty.to_token()?;
-    Ok(quote! {
-        #id: #ty
-    })
 }
 
 /// A string which is a valid identifier (snake_case)
@@ -666,6 +661,44 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
     Ok(typ)
 }
 
+fn generate_rust_server(routemap: &Map<Vec<Route>>) -> Result<TokenStream> {
+    let resources: Vec<_> = routemap
+        .iter()
+        .map(|(path, routes)| {
+            let (meth, opid): (Vec<_>, Vec<_>) = routes
+                .iter()
+                .map(|route| (ident(&route.method), ident(&route.operation_id)))
+                .unzip();
+            quote! {
+                web::resource(#path)
+                    #(.route(web::#meth().to_async(#opid::<A>)))*
+            }
+        })
+        .collect();
+
+    let server = quote! {
+        pub fn serve<A: Api>() -> std::io::Result<()> {
+            let api = Data::new(A::new());
+            HttpServer::new(move || {
+                App::new()
+                    .register_data(api.clone())
+                    #(.service(#resources))*
+            })
+                .bind("127.0.0.1:8000")?
+                .run()
+        }
+    };
+    Ok(server)
+}
+
+fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+    let id = ident(id);
+    let ty = ty.to_token()?;
+    Ok(quote! {
+        #id: #ty
+    })
+}
+
 pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
     let f = fs::File::open(yaml)?;
     generate_from_yaml_source(f)
@@ -678,6 +711,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_defs = generate_rust_types(&typs)?;
     let rust_trait = generate_rust_interface(&routes)?;
     let rust_dispatchers = generate_rust_dispatchers(&routes)?;
+    let rust_server = generate_rust_server(&routes)?;
     let code = quote! {
         // Type definitions
         #rust_defs
@@ -685,6 +719,8 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         #rust_trait
         // Dispatcher definitions
         #rust_dispatchers
+        // Server
+        #rust_server
     };
     Ok(prettify_code(code.to_string()))
 }
@@ -704,11 +740,12 @@ fn prettify_code(input: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempdir::TempDir;
     use yansi::Paint;
 
     fn assert_diff(left: &str, right: &str) {
         use diff::Result::*;
-        if left.contains(&right) {
+        if left == right {
             return;
         }
         for d in diff::lines(left, right) {
@@ -719,6 +756,12 @@ mod tests {
             }
         }
         panic!("Bad diff")
+    }
+
+    fn generate_and_compile(path: &str) {
+        let code = generate_from_yaml_file(path).unwrap();
+        let tmpdir = TempDir::new("hsr-codegen").unwrap();
+        unimplemented!()
     }
 
     #[test]
@@ -784,6 +827,24 @@ mod tests {
                     let rtn = AxJson(rtn);
                     Ok(rtn)
                 }.boxed().compat()
+            }
+
+            pub fn serve<A: Api>() -> std::io::Result<()> {
+                let api = Data::new(A::new());
+                HttpServer::new(move || {
+                    App::new()
+                        .register_data(api.clone())
+                        .service(
+                            web::resource("/pets").route(web::get().to_async(get_all_pets::<A>))
+                        )
+                        .service(
+                            web::resource("/pets/{petId}")
+                                .route(web::get().to_async(get_pet::<A>))
+                                .route(web::post().to_async(create_pet::<A>))
+                        )
+                })
+                    .bind("127.0.0.1:8000")?
+                    .run()
             }
         }
         .to_string();
