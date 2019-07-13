@@ -161,6 +161,12 @@ impl Route {
             match parameter {
                 // TODO what do the rest of the args do?
                 Path { parameter_data, .. } => {
+                    if !parameter_data.required {
+                        return Err(Error::Todo(format!(
+                            "Path parameter {} must be required",
+                            parameter_data.name
+                        )));
+                    }
                     let id = Ident::new(&parameter_data.name)?;
                     let ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
@@ -173,12 +179,15 @@ impl Route {
                 }
                 Query { parameter_data, .. } => {
                     let id = Ident::new(&parameter_data.name)?;
-                    let ty = match &parameter_data.format {
+                    let mut ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api)?
                         }
                         _content => unimplemented!(),
                     };
+                    if !parameter_data.required {
+                        ty = Type::Option(Box::new(ty));
+                    }
                     query_args.push((id, ty));
                 }
                 _ => unimplemented!(),
@@ -717,34 +726,45 @@ mod tests {
         let _ = env_logger::init();
         let yaml = "../example-api/petstore.yaml";
         let code = generate_from_yaml_file(yaml).unwrap();
+
+        // This is the complete expected code generation output
+        // It should compile!
         let expect = quote! {
+
             struct Error {
                 code: i64,
                 message: String
             }
+
             struct NewPet {
                 name: String,
                 tag: Option<String>
             }
+
             struct Pet {
                 id: i64,
                 name: String,
                 tag: Option<String>
             }
+
             type Pets = Vec<Pet>;
+
             pub trait Api: Send + Sync + 'static {
                 fn new() -> Self;
-                fn get_all_pets(&self, limit: i64) -> BoxFuture<Result<Pets>>;
+                fn get_all_pets(&self, limit: Option<i64>) -> BoxFuture<Result<Pets>>;
                 fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<()>>;
                 fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet>>;
             }
-            fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<i64>) -> impl Future1<Item = AxJson<Pets>, Error = Error> {
+
+            fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<Option<i64>>)
+                                    -> impl Future1<Item = AxJson<Pets>, Error = Error> {
                 async move {
                     let rtn = data.get_all_pets(limit.into_inner()).await?;
                     let rtn = AxJson(rtn);
                     Ok(rtn)
                 }.boxed().compat()
             }
+
             fn create_pet<A: Api>(
                 data: AxData<A>,
                 new_pet: AxJson<NewPet>,
@@ -754,6 +774,7 @@ mod tests {
                     Ok(rtn)
                 }.boxed().compat()
             }
+
             fn get_pet<A: Api>(
                 data: AxData<A>,
                 pet_id: AxPath<i64>,
@@ -764,7 +785,6 @@ mod tests {
                     Ok(rtn)
                 }.boxed().compat()
             }
-
         }
         .to_string();
         let expect = prettify_code(expect);
