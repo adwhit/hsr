@@ -138,30 +138,6 @@ struct Route {
     return_ty: Option<Type>,
 }
 
-fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
-    let id = ident(id);
-    let ty = ty.to_token()?;
-    Ok(quote! {
-        #id: #ty
-    })
-}
-
-fn id_pathty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
-    let id = ident(id);
-    let ty = ty.to_token()?;
-    Ok(quote! {
-        #id: Path<#ty>
-    })
-}
-
-fn id_queryty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
-    let id = ident(id);
-    let ty = ty.to_token()?;
-    Ok(quote! {
-        #id: Query<#ty>
-    })
-}
-
 impl Route {
     fn new(
         path: &str,
@@ -297,18 +273,25 @@ impl Route {
     fn generate_dispatcher(&self) -> Result<TokenStream> {
         // TODO lots of duplication with interface function
         let opid = ident(&self.operation_id);
-        let paths = self
+
+        let (path_names, path_tys): (Vec<_>, Vec<_>) = self
             .path_args
             .iter()
-            .map(|(id, ty)| id_pathty_pair(id, ty))
-            .collect::<Result<Vec<_>>>()?;
-        let queries = self
+            .map(|(id, ty)| (ident(id), ty.to_token()))
+            .unzip();
+        let path_tys = path_tys.into_iter().collect::<Result<Vec<_>>>()?;
+        let path_names = &path_names;
+
+        let (query_names, query_tys): (Vec<_>, Vec<_>) = self
             .query_args
             .iter()
-            .map(|(id, ty)| id_queryty_pair(id, ty))
-            .collect::<Result<Vec<_>>>()?;
-        let body_arg = match self.method {
-            Method::Get | Method::Post(None) => quote! {},
+            .map(|(id, ty)| (ident(id), ty.to_token()))
+            .unzip();
+        let query_tys = query_tys.into_iter().collect::<Result<Vec<_>>>()?;
+        let query_names = &query_names;
+
+        let (body_into, body_arg) = match self.method {
+            Method::Get | Method::Post(None) => (quote! {}, quote! {}),
             Method::Post(Some(ref body)) => {
                 let name = if let Type::Named(typename) = body {
                     ident(typename.to_string().to_snake_case())
@@ -316,28 +299,50 @@ impl Route {
                     ident("payload")
                 };
                 let ty = body.to_token()?;
-                quote! { #name: AxJson<#ty>, }
+                (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
             }
         };
-        let rtn = match &self.return_ty {
-            Some(ty) => ty.to_token()?,
+        let rtnty = match &self.return_ty {
+            Some(ty) => {
+                let ty = ty.to_token()?;
+                quote! { AxJson<#ty> }
+            }
             None => quote! { () },
         };
+        let maybe_wrap_rtnval = if self.return_ty.is_some() {
+            quote! { let rtn = AxJson(rtn); }
+        } else {
+            quote! {}
+        };
+
         let code = quote! {
             fn #opid<A: Api>(
-                data: Data<A>,
-                #(#paths,)*
-                #(#queries,)*
+                data: AxData<A>,
+                #(#path_names: AxPath<#path_tys>,)*
+                #(#query_names: AxQuery<#query_tys>,)*
                 #body_arg
-            ) -> impl Future1<Item = AxJson<#rtn>, Error = Error> {
+            ) -> impl Future1<Item = #rtnty, Error = Error> {
                 async move {
-                    let rtn = data.#opid().await?;
-                    Ok(AxJson(rtn))
+                    let rtn = data.#opid(
+                        #(#path_names.into_inner(),)*
+                        #(#query_names.into_inner(),)*
+                        #body_into
+                    ).await?;
+                    #maybe_wrap_rtnval
+                    Ok(rtn)
                 }.boxed().compat()
             }
         };
         Ok(code)
     }
+}
+
+fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+    let id = ident(id);
+    let ty = ty.to_token()?;
+    Ok(quote! {
+        #id: #ty
+    })
 }
 
 /// A string which is a valid identifier (snake_case)
@@ -733,12 +738,33 @@ mod tests {
                 fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<()>>;
                 fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet>>;
             }
-            fn get_all_pets<A: Api>(data: Data<A>, limit: Query<i64>) -> impl Future1<Item = AxJson<Pets>, Error = Error> {
+            fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<i64>) -> impl Future1<Item = AxJson<Pets>, Error = Error> {
                 async move {
-                    let rtn = data.get_all_pets().await?;
-                    Ok(AxJson(rtn))
+                    let rtn = data.get_all_pets(limit.into_inner()).await?;
+                    let rtn = AxJson(rtn);
+                    Ok(rtn)
                 }.boxed().compat()
             }
+            fn create_pet<A: Api>(
+                data: AxData<A>,
+                new_pet: AxJson<NewPet>,
+            ) -> impl Future1<Item = (), Error = Error> {
+                async move {
+                    let rtn = data.create_pet(new_pet.into_inner()).await?;
+                    Ok(rtn)
+                }.boxed().compat()
+            }
+            fn get_pet<A: Api>(
+                data: AxData<A>,
+                pet_id: AxPath<i64>,
+            ) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
+                async move {
+                    let rtn = data.get_pet(pet_id.into_inner()).await?;
+                    let rtn = AxJson(rtn);
+                    Ok(rtn)
+                }.boxed().compat()
+            }
+
         }
         .to_string();
         let expect = prettify_code(expect);
