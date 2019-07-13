@@ -114,7 +114,7 @@ fn gather_types(api: &OpenAPI) -> Result<TypeMap<Type>> {
 #[derive(Debug, Clone)]
 enum Method {
     Get,
-    Post(Type),
+    Post(Option<Type>),
 }
 
 impl fmt::Display for Method {
@@ -240,7 +240,7 @@ impl Route {
             query_args,
             segments,
             method,
-            return_ty
+            return_ty,
         })
     }
 
@@ -252,17 +252,29 @@ impl Route {
             .map(|(id, ty)| id_ty_pair(id, ty))
             .collect::<Result<Vec<_>>>()?;
         let queries = self
-            .path_args
+            .query_args
             .iter()
             .map(|(id, ty)| id_ty_pair(id, ty))
             .collect::<Result<Vec<_>>>()?;
+        let body_arg = match self.method {
+            Method::Get | Method::Post(None) => quote! {},
+            Method::Post(Some(ref body)) => {
+                let name = if let Type::Named(typename) = body {
+                    ident(typename.to_string().to_snake_case())
+                } else {
+                    ident("payload")
+                };
+                let ty = body.to_token()?;
+                quote! { #name: #ty, }
+            }
+        };
         let rtn = match &self.return_ty {
             Some(ty) => ty.to_token()?,
-            None => quote! { () }
+            None => quote! { () },
         };
 
         Ok(quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)*) -> BoxFuture<#rtn>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<Result<#rtn>>;
         })
     }
 }
@@ -352,28 +364,28 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             pathroutes.push(route)
         }
         if let Some(ref op) = pathitem.post {
-            let body = op
-                .request_body
-                .as_ref()
-                .ok_or_else(|| Error::Todo("'post' request has no body".into()))
-                .and_then(|body| {
-                    dereference(body, api.components.as_ref().map(|c| &c.request_bodies))
-                })?;
-            if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
-                return Err(Error::Todo(
-                    "Request body must by application/json only".into(),
-                ));
-            }
-            let ref_or_schema = body
-                .content
-                .get("application/json")
-                .unwrap()
-                .schema
-                .as_ref()
-                .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+            let body = if let Some(ref body) = op.request_body {
+                // extract the body type
+                let body = dereference(body, api.components.as_ref().map(|c| &c.request_bodies))?;
+                if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
+                    return Err(Error::Todo(
+                        "Request body must by application/json only".into(),
+                    ));
+                }
+                let ref_or_schema = body
+                    .content
+                    .get("application/json")
+                    .unwrap()
+                    .schema
+                    .as_ref()
+                    .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+                Some(build_type(&ref_or_schema, api)?)
+            } else {
+                None
+            };
             let route = Route::new(
                 path,
-                Method::Post(build_type(&ref_or_schema, api)?),
+                Method::Post(body),
                 &op.operation_id,
                 &op.parameters,
                 &op.responses,
@@ -396,6 +408,7 @@ fn generate_rust_types(typs: &TypeMap<Type>) -> Result<TokenStream> {
         } else {
             let name = ident(typename);
             let typ = typ.to_token()?;
+            // make a type alias
             quote! {
                 type #name = #typ;
             }
@@ -602,9 +615,9 @@ mod tests {
         let expect = quote! {
             pub trait Api: Send + Sync + 'static {
                 fn new() -> Self;
-                fn get_all_pets(&self) -> BoxFuture<Result<Vec<Pet>, Error>>;
-                fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>>;
-                fn create_pet(&self, pet: NewPet) -> BoxFuture<Result<Pet, Error>>;
+                fn get_all_pets(&self, limit: i64) -> BoxFuture<Result<Pets>>;
+                fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<()>>;
+                fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet>>;
             }
         }
         .to_string();

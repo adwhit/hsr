@@ -33,6 +33,8 @@ pub struct Pet;
 #[derive(Deserialize)]
 pub struct NewPet;
 
+pub type Pets = Vec<Pet>;
+
 pub trait Api: Send + Sync + 'static {
     fn new() -> Self;
     fn get_pet(&self, pet_id: u32) -> BoxFuture<Result<Pet, Error>>;
