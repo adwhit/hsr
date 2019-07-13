@@ -6,7 +6,7 @@ use derive_more::{Display, From};
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use log::{debug, info};
-use openapiv3::{MediaType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
+use openapiv3::{AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
@@ -441,10 +441,11 @@ enum Type {
     I64,
     Bool,
     Array(Box<Type>),
-    // TODO not sure this should be part of this enum
-    Struct(Map<Type>),
+    Option(Box<Type>),
     Any,
     Named(TypeName),
+    // TODO not sure this should be part of this enum
+    Struct(Map<Type>),
 }
 
 fn define_struct(name: &TypeName, elems: &Map<Type>) -> Result<TokenStream> {
@@ -490,6 +491,10 @@ impl Type {
                 let inner = elem.to_token()?;
                 quote! { Vec<#inner> }
             }
+            Option(typ) => {
+                let inner = typ.to_token()?;
+                quote! { Option<#inner> }
+            }
             Named(name) => {
                 let name = ident(name);
                 quote! { #name }
@@ -502,16 +507,40 @@ impl Type {
     }
 }
 
-macro_rules! typ_from_objlike {
-    ($obj: ident, $api: ident) => {{
-        let mut fields = Map::new();
-        for (name, schemaref) in &$obj.properties {
-            let schemaref = schemaref.clone().unbox();
-            let inner = build_type(&schemaref, $api)?;
-            assert!(fields.insert(name.clone(), inner).is_none());
+trait ObjectLike {
+    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
+    fn required(&self) -> &[String];
+}
+
+macro_rules! impl_objlike {
+    ($obj:ty) => {
+        impl ObjectLike for $obj {
+            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
+                &self.properties
+            }
+            fn required(&self) -> &[String] {
+                &self.required
+            }
         }
-        Ok(Type::Struct(fields))
-    }};
+    }
+}
+
+impl_objlike!(ObjectType);
+impl_objlike!(AnySchema);
+
+
+fn type_from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Type> {
+    let mut fields = Map::new();
+    let required_args: Set<String> = obj.required().iter().cloned().collect();
+    for (name, schemaref) in obj.properties() {
+        let schemaref = schemaref.clone().unbox();
+        let mut inner = build_type(&schemaref, api)?;
+        if !required_args.contains(name) {
+            inner = Type::Option(Box::new(inner));
+        }
+        assert!(fields.insert(name.clone(), inner).is_none());
+    }
+    Ok(Type::Struct(fields))
 }
 
 // TODO this probably doesn't need to accept the whole API object
@@ -529,7 +558,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
             if obj.properties.is_empty() {
                 return Ok(Type::Any);
             } else {
-                return typ_from_objlike!(obj, api);
+                return type_from_objlike(obj, api);
             }
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
@@ -547,7 +576,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
             Type::Array(Box::new(inner))
         }
         ApiType::Object(obj) => {
-            return typ_from_objlike!(obj, api);
+            return type_from_objlike(obj, api);
         }
     };
     Ok(typ)
@@ -613,6 +642,16 @@ mod tests {
         let yaml = "../example-api/petstore.yaml";
         let code = generate_from_yaml_file(yaml).unwrap();
         let expect = quote! {
+            struct NewPet {
+                name: String,
+                tag: Option<String>
+            }
+            struct Pet {
+                id: i64,
+                name: String,
+                tag: Option<String>
+            }
+            type Pets = Vec<Pet>;
             pub trait Api: Send + Sync + 'static {
                 fn new() -> Self;
                 fn get_all_pets(&self, limit: i64) -> BoxFuture<Result<Pets>>;
