@@ -9,3 +9,5 @@ hsr-codegen = { path = "../hsr-codegen" }
 
 [dependencies]
 actix-web = "1.0.3"
+futures-preview = { version = "0.3.0-alpha.17", features = ["compat"] }
+futures1 = { package = "futures", version = "0.1" }

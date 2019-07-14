@@ -19,7 +19,6 @@ fn ident(s: impl fmt::Display) -> QIdent {
 
 type Map<T> = std::collections::BTreeMap<String, T>;
 type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
-type IdMap<T> = std::collections::BTreeMap<Ident, T>;
 type Set<T> = std::collections::BTreeSet<T>;
 
 #[derive(Debug, From, Fail)]
@@ -713,10 +712,15 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_dispatchers = generate_rust_dispatchers(&routes)?;
     let rust_server = generate_rust_server(&routes)?;
     let code = quote! {
-        use actix_web::{App, HttpServer, web};
-        use actix_web::web::{Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+
+        use actix_web::{App, HttpServer};
+        use actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+        use futures::future::{BoxFuture, FutureExt, TryFutureExt};
         use futures1::Future as Future1;
-        use futures::BoxFuture;
+
+        // TODO error handling
+        type Result<T> = std::result::Result<T, Box<std::error::Error>>;
+
         // Type definitions
         #rust_defs
         // Interface definition
@@ -768,11 +772,11 @@ mod tests {
         panic!("Bad diff")
     }
 
-    fn generate_and_compile(path: &str) {
-        let code = generate_from_yaml_file(path).unwrap();
-        let tmpdir = TempDir::new("hsr-codegen").unwrap();
-        unimplemented!()
-    }
+    // fn generate_and_compile(path: &str) {
+    //     let code = generate_from_yaml_file(path).unwrap();
+    //     let tmpdir = TempDir::new("hsr-codegen").unwrap();
+    //     unimplemented!()
+    // }
 
     #[test]
     fn test_build_types_simple() {
@@ -783,6 +787,12 @@ mod tests {
         // This is the complete expected code generation output
         // It should compile!
         let expect = quote! {
+            use actix_web::{App, HttpServer};
+            use actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+            use futures::future::{BoxFuture, FutureExt, TryFutureExt};
+            use futures1::Future as Future1;
+
+            type Result<T> = std::result::Result<T, Box<std::error::Error>>;
 
             struct Error {
                 code: i64,
