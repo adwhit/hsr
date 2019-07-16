@@ -136,8 +136,8 @@ struct Route {
     path_args: Vec<(Ident, Type)>,
     query_args: Vec<(Ident, Type)>,
     segments: Vec<PathSegment>,
-    return_ty: Option<Type>,
-    err_tys: Vec<Option<Type>>
+    return_ty: (u16, Option<Type>),
+    err_tys: Vec<(u16, Option<Type>)>,
 }
 
 impl Route {
@@ -202,7 +202,8 @@ impl Route {
         let mut success = None;
         let mut errors = vec![];
         for code in responses.responses.keys() {
-            let v = code.parse::<u16>()
+            let v = code
+                .parse::<u16>()
                 .map_err(|_| Error::Todo(format!("Invalid status code: {}", code)))?;
             if 200 <= v && v <= 300 {
                 if success.replace(v).is_some() {
@@ -211,20 +212,23 @@ impl Route {
             } else if 400 <= v && v <= 500 {
                 errors.push(v)
             } else {
-                return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()))
+                return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()));
             }
         }
 
-        let success = match success {
-            Some(v) => v,
-            None => return Err(Error::Todo("Expeced exactly one 'success' status".into()))
-        };
-        let ref_or_resp = &responses.responses[&success.to_string()];
-        let return_ty = get_type_from_response(&ref_or_resp, api)?;
-        let err_tys = errors.iter().map(|e| {
-            let ref_or_resp = &responses.responses[&e.to_string()];
-            get_type_from_response(&ref_or_resp, api)
-        }).collect::<Result<Vec<Option<Type>>>>()?;
+        let return_ty = success
+            .ok_or_else(|| Error::Todo("Expeced exactly one 'success' status".into()))
+            .and_then(|v| {
+                let ref_or_resp = &responses.responses[&v.to_string()];
+                get_type_from_response(&ref_or_resp, api).map(|ty| (v, ty))
+            })?;
+        let err_tys = errors
+            .iter()
+            .map(|&e| {
+                let ref_or_resp = &responses.responses[&e.to_string()];
+                get_type_from_response(&ref_or_resp, api).map(|ty| (e, ty))
+            })
+            .collect::<Result<Vec<(u16, Option<Type>)>>>()?;
 
         Ok(Route {
             operation_id,
@@ -233,7 +237,7 @@ impl Route {
             segments,
             method,
             return_ty,
-            err_tys
+            err_tys,
         })
     }
 
@@ -261,7 +265,7 @@ impl Route {
                 quote! { #name: #ty, }
             }
         };
-        let rtn = match &self.return_ty {
+        let rtn = match &self.return_ty.1 {
             Some(ty) => ty.to_token()?,
             None => quote! { () },
         };
@@ -303,14 +307,14 @@ impl Route {
                 (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
             }
         };
-        let rtnty = match &self.return_ty {
+        let rtnty = match &self.return_ty.1 {
             Some(ty) => {
                 let ty = ty.to_token()?;
                 quote! { AxJson<#ty> }
             }
             None => quote! { () },
         };
-        let maybe_wrap_rtnval = if self.return_ty.is_some() {
+        let maybe_wrap_rtnval = if self.return_ty.1.is_some() {
             quote! { let rtn = AxJson(rtn); }
         } else {
             quote! {}
@@ -338,7 +342,10 @@ impl Route {
     }
 }
 
-fn get_type_from_response(ref_or_resp: &ReferenceOr<openapiv3::Response>, api: &OpenAPI) -> Result<Option<Type>> {
+fn get_type_from_response(
+    ref_or_resp: &ReferenceOr<openapiv3::Response>,
+    api: &OpenAPI,
+) -> Result<Option<Type>> {
     let resp = dereference(ref_or_resp, api.components.as_ref().map(|c| &c.responses))?;
     if !resp.headers.is_empty() {
         return Err(Error::Todo("response headers not supported".into()));
@@ -781,7 +788,7 @@ mod tests {
                 Left(l) => println!("{}", Paint::red(format!("- {}", l))),
                 Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
                 // Both(l, _) => println!("= {}", l),
-                _ => ()
+                _ => (),
             }
         }
         panic!("Bad diff")
