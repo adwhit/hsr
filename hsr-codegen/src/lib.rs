@@ -43,7 +43,7 @@ pub enum Error {
     NotStructurallyTyped,
     #[fail(display = "Path is malformed: {}", _0)]
     MalformedPath(String),
-    #[fail(display = "No operation id given for route {}", _0)]
+    #[fail(display = "No operatio Join Private Q&A n id given for route {}", _0)]
     NoOperationId(String),
     #[fail(display = "TODO: {}", _0)]
     Todo(String),
@@ -137,6 +137,7 @@ struct Route {
     query_args: Vec<(Ident, Type)>,
     segments: Vec<PathSegment>,
     return_ty: Option<Type>,
+    err_tys: Vec<Option<Type>>
 }
 
 impl Route {
@@ -196,46 +197,34 @@ impl Route {
             }
         }
 
-        // check responses are valid status codes
-        let responses_are_valid = responses
-            .responses
-            .keys()
-            .map(|k| {
-                k.parse()
-                    .map_err(|_| Error::Todo(format!("Invalid status code: {}", k)))
-            })
-            .collect::<Result<Set<u16>>>()?;
-        // look for success status
-        let success_responses = responses_are_valid
-            .iter()
-            .filter(|&v| *v >= 200 && *v < 300)
-            .collect::<Vec<_>>();
-        if success_responses.len() != 1 {
-            return Err(Error::Todo("Expeced exactly one 'success' status".into()));
+        // Check responses are valid status codes
+        // We only support 2XX (success) and 4XX (error) codes
+        let mut success = None;
+        let mut errors = vec![];
+        for code in responses.responses.keys() {
+            let v = code.parse::<u16>()
+                .map_err(|_| Error::Todo(format!("Invalid status code: {}", code)))?;
+            if 200 <= v && v <= 300 {
+                if success.replace(v).is_some() {
+                    return Err(Error::Todo("Expeced exactly one 'success' status".into()));
+                }
+            } else if 400 <= v && v <= 500 {
+                errors.push(v)
+            } else {
+                return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()))
+            }
         }
-        let status = success_responses[0].to_string();
-        let ref_or_resp = &responses.responses[&status];
-        let resp = dereference(ref_or_resp, api.components.as_ref().map(|c| &c.responses))?;
-        if !resp.headers.is_empty() {
-            return Err(Error::Todo("response headers not supported".into()));
-        }
-        if !resp.links.is_empty() {
-            return Err(Error::Todo("response links not supported".into()));
-        }
-        let return_ty = if resp.content.is_empty() {
-            None
-        } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
-            return Err(Error::Todo(
-                "content type must be 'application/json'".into(),
-            ));
-        } else {
-            // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
-            let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
-                .schema
-                .as_ref()
-                .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-            Some(build_type(&ref_or_schema, api)?)
+
+        let success = match success {
+            Some(v) => v,
+            None => return Err(Error::Todo("Expeced exactly one 'success' status".into()))
         };
+        let ref_or_resp = &responses.responses[&success.to_string()];
+        let return_ty = get_type_from_response(&ref_or_resp, api)?;
+        let err_tys = errors.iter().map(|e| {
+            let ref_or_resp = &responses.responses[&e.to_string()];
+            get_type_from_response(&ref_or_resp, api)
+        }).collect::<Result<Vec<Option<Type>>>>()?;
 
         Ok(Route {
             operation_id,
@@ -244,6 +233,7 @@ impl Route {
             segments,
             method,
             return_ty,
+            err_tys
         })
     }
 
@@ -345,6 +335,30 @@ impl Route {
             }
         };
         Ok(code)
+    }
+}
+
+fn get_type_from_response(ref_or_resp: &ReferenceOr<openapiv3::Response>, api: &OpenAPI) -> Result<Option<Type>> {
+    let resp = dereference(ref_or_resp, api.components.as_ref().map(|c| &c.responses))?;
+    if !resp.headers.is_empty() {
+        return Err(Error::Todo("response headers not supported".into()));
+    }
+    if !resp.links.is_empty() {
+        return Err(Error::Todo("response links not supported".into()));
+    }
+    if resp.content.is_empty() {
+        Ok(None)
+    } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
+        return Err(Error::Todo(
+            "content type must be 'application/json'".into(),
+        ));
+    } else {
+        // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
+        let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
+            .schema
+            .as_ref()
+            .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+        Ok(Some(build_type(&ref_or_schema, api)?))
     }
 }
 
@@ -766,7 +780,8 @@ mod tests {
             match d {
                 Left(l) => println!("{}", Paint::red(format!("- {}", l))),
                 Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
-                Both(l, _) => println!("= {}", l),
+                // Both(l, _) => println!("= {}", l),
+                _ => ()
             }
         }
         panic!("Bad diff")

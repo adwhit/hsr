@@ -82,3 +82,60 @@ host, one available on `crates.io`.
 When compiled by the client, they get everything they need for functional code
 including a simple development server. When compiling on the host, we have
 all the extra stuff necessary for serverless magic (HTTPS, auth, billing etc).
+
+### Design details
+
+The OpenAPI spec allows one to return multiple different types from each operation.
+How should this be represented? The most 'obvious' way it to just return an enum
+which may contain any of the outcomes.
+
+But, we would really like to handle the sad path in an idiomatic way with the `?` operator.
+Suppose the responses were
+
+```
+200: Happy
+401: NotAllowed
+406: NotAcceptable
+```
+We would like the method:
+```
+fn api_call(&self, something: SomeData) -> Result<Happy, ApiCallError>;
+```
+with the impls:
+```
+enum ApiCallError {
+    NotAllowed(NotAllowed),
+    NotAcceptable(NotAcceptable)
+}
+
+impl From<NotAllowed> for ApiCallError {
+    // ...
+}
+
+impl From<NotAcceptable> for ApiCallError {
+    // ...
+}
+
+impl HasStatus for Result<Happy, ApiCallError> {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Ok(_) => 200,
+            Err(NotAllowed) => 401,
+            Err(NotAcceptable) => 406,
+        }
+    }
+}
+```
+
+Then we use it like
+```
+fn do_something(s: SomeData) -> Result<Other, NotAllowed> { .. }
+
+fn do_another_thing(o: Other) -> Result<Happy, NotAcceptable> { .. }
+
+fn api_call(&self, something: SomeData) -> Result<Happy, ApiCallError> {
+    let other = do_something(something)?;
+    let happy = do_another_thing(other)?;
+    Ok(happy)
+}
+```

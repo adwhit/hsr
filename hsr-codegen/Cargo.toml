@@ -16,11 +16,11 @@ regex = "1.1.9"
 log = "0.4.7"
 rustfmt-nightly = "1.3.2"
 serde_yaml = "0.8.9"
-syn = "0.15.39"
 structopt = "0.2.18"
+syn = "0.15.39"
 
 [dev-dependencies]
 diff = "0.1.11"
 env_logger = "0.6.2"
-yansi = "0.5.0"
 tempdir = "0.3.7"
+yansi = "0.5.0"
