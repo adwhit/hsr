@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use derive_more::{Display, From};
+use derive_deref::Deref;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use log::{debug, info};
@@ -241,8 +242,32 @@ impl Route {
         })
     }
 
+    fn op_id(&self) -> QIdent {
+        ident(&self.operation_id)
+    }
+
+    fn return_err_ty(&self) -> QIdent {
+        ident(format!("{}Err", &*self.operation_id.to_camel_case()))
+    }
+
+    fn return_ty(&self) -> Result<TokenStream> {
+        let ok = match &self.return_ty.1 {
+            Some(ty) => ty.to_token()?,
+            None => quote! { () },
+        };
+        // TODO what about default returns?
+        let rtn = if self.err_tys.is_empty() {
+            ok
+        } else {
+            let err = self.return_err_ty();
+            quote! { std::result::Result<#ok, #err> }
+        };
+        Ok(rtn)
+    }
+
     fn generate_interface(&self) -> Result<TokenStream> {
-        let opid = ident(&self.operation_id);
+        let opid = self.op_id();
+        let rtn_ty = self.return_ty()?;
         let paths = self
             .path_args
             .iter()
@@ -265,13 +290,8 @@ impl Route {
                 quote! { #name: #ty, }
             }
         };
-        let rtn = match &self.return_ty.1 {
-            Some(ty) => ty.to_token()?,
-            None => quote! { () },
-        };
-
         Ok(quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<Result<#rtn>>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<#rtn_ty>;
         })
     }
 
@@ -370,7 +390,7 @@ fn get_type_from_response(
 }
 
 /// A string which is a valid identifier (snake_case)
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct Ident(String);
 
 impl Ident {
@@ -389,7 +409,7 @@ impl Ident {
 }
 
 /// A string which is a valid name for type (CamelCase)
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct TypeName(String);
 
 impl TypeName {
