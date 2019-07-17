@@ -71,7 +71,12 @@ fn dereference<'a, T>(
     lookup: Option<&'a Map<ReferenceOr<T>>>,
 ) -> Result<&'a T> {
     match refr {
-        ReferenceOr::Reference { reference } => unimplemented!(),
+        ReferenceOr::Reference { reference } => {
+            lookup
+                .and_then(|map| map.get(reference))
+                .ok_or_else(|| Error::BadReference(reference.to_string()))
+                .and_then(|refr| dereference(refr, lookup))
+        }
         ReferenceOr::Item(item) => Ok(item),
     }
 }
@@ -593,6 +598,27 @@ impl Struct {
 
 }
 
+trait ObjectLike {
+    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
+    fn required(&self) -> &[String];
+}
+
+macro_rules! impl_objlike {
+    ($obj:ty) => {
+        impl ObjectLike for $obj {
+            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
+                &self.properties
+            }
+            fn required(&self) -> &[String] {
+                &self.required
+            }
+        }
+    };
+}
+
+impl_objlike!(ObjectType);
+impl_objlike!(AnySchema);
+
 fn define_struct(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
@@ -633,27 +659,6 @@ impl Type {
         }
     }
 }
-
-trait ObjectLike {
-    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
-    fn required(&self) -> &[String];
-}
-
-macro_rules! impl_objlike {
-    ($obj:ty) => {
-        impl ObjectLike for $obj {
-            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
-                &self.properties
-            }
-            fn required(&self) -> &[String] {
-                &self.required
-            }
-        }
-    };
-}
-
-impl_objlike!(ObjectType);
-impl_objlike!(AnySchema);
 
 // TODO this probably doesn't need to accept the whole API object
 fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Either<Struct, Type>> {
@@ -772,7 +777,6 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         #rust_server
     };
     Ok(prettify_code(code.to_string()))
-    // Ok(code.to_string())
 }
 
 fn prettify_code(input: String) -> String {
