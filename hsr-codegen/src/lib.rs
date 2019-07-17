@@ -268,7 +268,7 @@ impl Route {
             (&[], Some(default_ty)) => Some(default_ty.to_token()),
             (&[(_, Some(ref err_ty))], None) => Some(err_ty.to_token()),
             _many => {
-                let manyid = ident(format!("{}Err", &*self.operation_id.to_camel_case()));
+                let manyid = ident(format!("{}Error", &*self.operation_id.to_camel_case()));
                 Some(quote! { #manyid })
             }
         }
@@ -352,10 +352,14 @@ impl Route {
             }
             None => quote! { () },
         };
+
         // If return type is not null, we wrap it in AxJson
+        // XXX This is wrong, could end up wrapping a Result
         let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
-            quote! { let rtn = AxJson(rtn); }
+            quote! { .map(AxJson) }
         });
+
+        let return_err_ty = self.return_err_ty().unwrap_or(quote! { Void });
 
         let code = quote! {
             fn #opid<A: Api>(
@@ -363,16 +367,16 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #(#query_names: AxQuery<#query_tys>,)*
                 #body_arg
-            ) -> impl Future1<Item = #rtnty, Error = Error> {
-                async move {
-                    let rtn = data.#opid(
-                        #(#path_names.into_inner(),)*
-                        #(#query_names.into_inner(),)*
-                        #body_into
-                    ).await?;
+            ) -> impl Future1<Item = #rtnty, Error = #return_err_ty> {
+                data.#opid(
+                    #(#path_names.into_inner(),)*
+                    #(#query_names.into_inner(),)*
+                    #body_into
+                )
+                    // we have to turn the output into a result type
                     #maybe_wrap_rtnval
-                    Ok(rtn)
-                }.boxed().compat()
+                    .boxed()
+                    .compat()
             }
         };
         code
@@ -533,7 +537,7 @@ fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenS
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
         let def = match typ {
-            Either::Left(strukt) => define_struct(typename, strukt),
+            Either::Left(strukt) => generate_struct_def(typename, strukt),
             Either::Right(typ) => {
                 let name = ident(typename);
                 let typ = typ.to_token();
@@ -572,6 +576,7 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                         variants.push(quote! { Default(#ty) })
                     }
                     let def = quote! {
+                        # [derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
                         enum #name {
                             #(#variants,)*
                         }
@@ -669,11 +674,12 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
-fn define_struct(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
+fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
     let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
     let toks = quote! {
+        # [derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
         struct #name {
             #(#field: #fieldtype),*
         }
@@ -807,10 +813,12 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_server = generate_rust_server(&routes);
     let code = quote! {
 
+        use hsr_runtime::Void;
         use hsr_runtime::actix_web::{App, HttpServer};
         use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
+        use hsr_runtime::serde::{Serialize, Deserialize};
 
         // TODO error handling
         type Result<T> = std::result::Result<T, Box<std::error::Error>>;

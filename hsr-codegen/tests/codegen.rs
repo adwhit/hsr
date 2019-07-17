@@ -13,9 +13,8 @@ fn assert_diff(left: &str, right: &str) {
     for d in diff::lines(left, right) {
         match d {
             Left(l) => println!("{}", Paint::red(format!("- {}", l))),
-            // Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
+            Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
             Both(l, _) => println!("= {}", l),
-            _ => (),
         }
     }
     panic!("Bad diff")
@@ -30,23 +29,28 @@ fn build_types_simple() {
     // This is the complete expected code generation output
     // It should compile!
     let expect = quote! {
+        use hsr_runtime::Void;
         use hsr_runtime::actix_web::{App, HttpServer};
         use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
+        use hsr_runtime::serde::{Serialize, Deserialize};
 
         type Result<T> = std::result::Result<T, Box<std::error::Error>>;
 
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
         struct Error {
             code: i64,
             message: String
         }
 
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
         struct NewPet {
             name: String,
             tag: Option<String>
         }
 
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
         struct Pet {
             id: i64,
             name: String,
@@ -55,11 +59,13 @@ fn build_types_simple() {
 
         type Pets = Vec<Pet>;
 
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
         struct SomeConflict {
             message: String
         }
 
-        enum CreatePetErr {
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        enum CreatePetError {
             E403,
             E409(SomeConflict),
             Default(Error)
@@ -68,38 +74,35 @@ fn build_types_simple() {
         pub trait Api: Send + Sync + 'static {
             fn new() -> Self;
             fn get_all_pets(&self, limit: Option<i64>) -> BoxFuture3<Pets>;
-            fn create_pet(&self, new_pet: NewPet) -> BoxFuture3<std::result::Result<(), CreatePetErr>>;
+            fn create_pet(&self, new_pet: NewPet) -> BoxFuture3<std::result::Result<(), CreatePetError>>;
             fn get_pet(&self, pet_id: i64) -> BoxFuture3<std::result::Result<Pet, Error>>;
         }
 
         fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<Option<i64>>)
-                                -> impl Future1<Item = AxJson<Pets>, Error = Error> {
-            async move {
-                let rtn = data.get_all_pets(limit.into_inner()).await?;
-                let rtn = AxJson(rtn);
-                Ok(rtn)
-            }.boxed().compat()
+                                -> impl Future1<Item = AxJson<Pets>, Error = Void> {
+            data.get_all_pets(limit.into_inner())
+                .map(|v| Ok(AxJson(v)))
+                .boxed()
+                .compat()
         }
 
         fn create_pet<A: Api>(
             data: AxData<A>,
             new_pet: AxJson<NewPet>,
-        ) -> impl Future1<Item = (), Error = Error> {
-            async move {
-                let rtn = data.create_pet(new_pet.into_inner()).await?;
-                Ok(rtn)
-            }.boxed().compat()
+        ) -> impl Future1<Item = (), Error = CreatePetError> {
+            data.create_pet(new_pet.into_inner())
+                .boxed()
+                .compat()
         }
 
         fn get_pet<A: Api>(
             data: AxData<A>,
             pet_id: AxPath<i64>,
         ) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
-            async move {
-                let rtn = data.get_pet(pet_id.into_inner()).await?;
-                let rtn = AxJson(rtn);
-                Ok(rtn)
-            }.boxed().compat()
+            data.get_pet(pet_id.into_inner())
+                .map(|res| res.map(AxJson))
+                .boxed()
+                .compat()
         }
 
         pub fn serve<A: Api>() -> std::io::Result<()> {
