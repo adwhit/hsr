@@ -33,12 +33,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pets"
-        default:
-          description: unexpected error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     post:
       summary: Create a pet
       operationId: createPet
@@ -54,6 +48,14 @@ paths:
       responses:
         '201':
           description: Null response
+        '403':
+          description: some forbidden
+        '409':
+          description: some conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SomeConflict"
         default:
           description: unexpected error
           content:
@@ -120,5 +122,11 @@ components:
         code:
           type: integer
           format: int32
+        message:
+          type: string
+    SomeConflict:
+      required:
+        - message
+      properties:
         message:
           type: string

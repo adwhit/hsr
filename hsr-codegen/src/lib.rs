@@ -1,11 +1,12 @@
 #![recursion_limit = "256"]
+#![feature(todo_macro)]
 
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use derive_more::{Display, From};
 use derive_deref::Deref;
+use derive_more::{Display, From};
 use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
@@ -71,12 +72,10 @@ fn dereference<'a, T>(
     lookup: Option<&'a Map<ReferenceOr<T>>>,
 ) -> Result<&'a T> {
     match refr {
-        ReferenceOr::Reference { reference } => {
-            lookup
-                .and_then(|map| map.get(reference))
-                .ok_or_else(|| Error::BadReference(reference.to_string()))
-                .and_then(|refr| dereference(refr, lookup))
-        }
+        ReferenceOr::Reference { reference } => lookup
+            .and_then(|map| map.get(reference))
+            .ok_or_else(|| Error::BadReference(reference.to_string()))
+            .and_then(|refr| dereference(refr, lookup)),
         ReferenceOr::Item(item) => Ok(item),
     }
 }
@@ -145,6 +144,7 @@ struct Route {
     segments: Vec<PathSegment>,
     return_ty: (u16, Option<Type>),
     err_tys: Vec<(u16, Option<Type>)>,
+    default_err_ty: Option<Type>,
 }
 
 impl Route {
@@ -181,7 +181,7 @@ impl Route {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api).and_then(discard_struct_def)?
                         }
-                        _content => unimplemented!(),
+                        _content => todo!(),
                     };
                     // TODO validate against path segments
                     path_args.push((id, ty));
@@ -193,14 +193,14 @@ impl Route {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api).and_then(discard_struct_def)?
                         }
-                        _content => unimplemented!(),
+                        _content => todo!(),
                     };
                     if !parameter_data.required {
                         ty = Type::Option(Box::new(ty));
                     }
                     query_args.push((id, ty));
                 }
-                _ => unimplemented!(),
+                _ => todo!(),
             }
         }
 
@@ -236,6 +236,15 @@ impl Route {
                 get_type_from_response(&ref_or_resp, api).map(|ty| (e, ty))
             })
             .collect::<Result<Vec<(u16, Option<Type>)>>>()?;
+        let default_err_ty = responses
+            .default
+            .as_ref()
+            .map(|ref_or_resp| {
+                get_type_from_response(&ref_or_resp, api).and_then(|mb_ty| {
+                    mb_ty.ok_or_else(|| Error::Todo("default type may not null".to_string()))
+                })
+            })
+            .transpose()?;
 
         Ok(Route {
             operation_id,
@@ -245,6 +254,7 @@ impl Route {
             method,
             return_ty,
             err_tys,
+            default_err_ty,
         })
     }
 
@@ -252,8 +262,16 @@ impl Route {
         ident(&self.operation_id)
     }
 
-    fn return_err_ty(&self) -> QIdent {
-        ident(format!("{}Err", &*self.operation_id.to_camel_case()))
+    fn return_err_ty(&self) -> Option<TokenStream> {
+        match (&self.err_tys[..], &self.default_err_ty) {
+            (&[], None) => None,
+            (&[], Some(default_ty)) => Some(default_ty.to_token()),
+            (&[(_, Some(ref err_ty))], None) => Some(err_ty.to_token()),
+            _many => {
+                let manyid = ident(format!("{}Err", &*self.operation_id.to_camel_case()));
+                Some(quote! { #manyid })
+            }
+        }
     }
 
     fn return_ty(&self) -> TokenStream {
@@ -261,14 +279,10 @@ impl Route {
             Some(ty) => ty.to_token(),
             None => quote! { () },
         };
-        // TODO what about default returns?
-        let rtn = if self.err_tys.is_empty() {
-            ok
-        } else {
-            let err = self.return_err_ty();
-            quote! { std::result::Result<#ok, #err> }
-        };
-        rtn
+        match self.return_err_ty() {
+            Some(err) => quote! { std::result::Result<#ok, #err> },
+            None => ok,
+        }
     }
 
     fn generate_interface(&self) -> TokenStream {
@@ -297,7 +311,7 @@ impl Route {
             }
         };
         quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<#rtn_ty>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#rtn_ty>;
         }
     }
 
@@ -338,11 +352,10 @@ impl Route {
             }
             None => quote! { () },
         };
-        let maybe_wrap_rtnval = if self.return_ty.1.is_some() {
+        // If return type is not null, we wrap it in AxJson
+        let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
             quote! { let rtn = AxJson(rtn); }
-        } else {
-            quote! {}
-        };
+        });
 
         let code = quote! {
             fn #opid<A: Api>(
@@ -389,7 +402,9 @@ fn get_type_from_response(
             .schema
             .as_ref()
             .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-        Ok(Some(build_type(&ref_or_schema, api).and_then(discard_struct_def)?))
+        Ok(Some(
+            build_type(&ref_or_schema, api).and_then(discard_struct_def)?,
+        ))
     }
 }
 
@@ -514,7 +529,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-fn generate_rust_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenStream {
+fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
         let def = match typ {
@@ -529,6 +544,42 @@ fn generate_rust_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenStream {
             }
         };
         tokens.extend(def);
+    }
+    tokens
+}
+
+fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
+    let mut tokens = TokenStream::new();
+    for (_path, routes) in routemap {
+        for route in routes {
+            match (&route.err_tys[..], &route.default_err_ty) {
+                (&[], None) => {}         // Nothing to do
+                (&[], Some(_)) => {}      // We will use the lone default type
+                (&[ref _one], None) => {} // We will use the lone error type
+                (multiple, mb_default) => {
+                    let name = route.return_err_ty().unwrap();
+                    let mut variants: Vec<_> = multiple
+                        .iter()
+                        .map(|(code, mb_ty)| {
+                            let statuscode = ident(format!("E{}", code));
+                            match mb_ty.as_ref().map(|ty| ty.to_token()) {
+                                Some(ty) => quote! { #statuscode(#ty) },
+                                None => quote! { #statuscode },
+                            }
+                        })
+                        .collect();
+                    if let Some(ty) = mb_default.as_ref().map(|ty| ty.to_token()) {
+                        variants.push(quote! { Default(#ty) })
+                    }
+                    let def = quote! {
+                        enum #name {
+                            #(#variants,)*
+                        }
+                    };
+                    tokens.extend(def);
+                }
+            }
+        }
     }
     tokens
 }
@@ -595,7 +646,6 @@ impl Struct {
         }
         Self::new(fields)
     }
-
 }
 
 trait ObjectLike {
@@ -622,10 +672,7 @@ impl_objlike!(AnySchema);
 fn define_struct(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
-    let fieldtype: Vec<_> = elems
-        .values()
-        .map(|s| s.to_token())
-        .collect();
+    let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
     let toks = quote! {
         struct #name {
             #(#field: #fieldtype),*
@@ -655,7 +702,7 @@ impl Type {
                 quote! { #name }
             }
             // TODO handle Any properly
-            Any => unimplemented!()
+            Any => todo!(),
         }
     }
 }
@@ -702,7 +749,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Eith
 fn discard_struct_def(ty: Either<Struct, Type>) -> Result<Type> {
     match ty {
         Either::Right(inner) => Ok(inner),
-        Either::Left(_) => return Err(Error::NotStructurallyTyped)
+        Either::Left(_) => return Err(Error::NotStructurallyTyped),
     }
 }
 
@@ -753,22 +800,24 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
     let typs = gather_types(&api)?;
     let routes = gather_routes(&api)?;
-    let rust_defs = generate_rust_types(&typs);
+    let rust_component_types = generate_rust_component_types(&typs);
+    let rust_route_types = generate_rust_route_types(&routes);
     let rust_trait = generate_rust_interface(&routes);
     let rust_dispatchers = generate_rust_dispatchers(&routes);
     let rust_server = generate_rust_server(&routes);
     let code = quote! {
 
-        use actix_web::{App, HttpServer};
-        use actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
-        use futures::future::{BoxFuture, FutureExt, TryFutureExt};
-        use futures1::Future as Future1;
+        use hsr_runtime::actix_web::{App, HttpServer};
+        use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+        use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
+        use hsr_runtime::futures1::Future as Future1;
 
         // TODO error handling
         type Result<T> = std::result::Result<T, Box<std::error::Error>>;
 
         // Type definitions
-        #rust_defs
+        #rust_component_types
+        #rust_route_types
         // Interface definition
         #rust_trait
         // Dispatcher definitions
@@ -779,7 +828,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     Ok(prettify_code(code.to_string()))
 }
 
-fn prettify_code(input: String) -> String {
+pub fn prettify_code(input: String) -> String {
     let mut buf = Vec::new();
     {
         let mut config = rustfmt_nightly::Config::default();
@@ -799,124 +848,6 @@ fn prettify_code(input: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempdir::TempDir;
-    use yansi::Paint;
-
-    fn assert_diff(left: &str, right: &str) {
-        use diff::Result::*;
-        if left == right {
-            return;
-        }
-        for d in diff::lines(left, right) {
-            match d {
-                Left(l) => println!("{}", Paint::red(format!("- {}", l))),
-                Right(r) => println!("{}", Paint::green(format!("+ {}", r))),
-                // Both(l, _) => println!("= {}", l),
-                _ => (),
-            }
-        }
-        panic!("Bad diff")
-    }
-
-    // fn generate_and_compile(path: &str) {
-    //     let code = generate_from_yaml_file(path).unwrap();
-    //     let tmpdir = TempDir::new("hsr-codegen").unwrap();
-    //     unimplemented!()
-    // }
-
-    #[test]
-    fn test_build_types_simple() {
-        let _ = env_logger::init();
-        let yaml = "../example-api/petstore.yaml";
-        let code = generate_from_yaml_file(yaml).unwrap();
-
-        // This is the complete expected code generation output
-        // It should compile!
-        let expect = quote! {
-            use actix_web::{App, HttpServer};
-            use actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
-            use futures::future::{BoxFuture, FutureExt, TryFutureExt};
-            use futures1::Future as Future1;
-
-            type Result<T> = std::result::Result<T, Box<std::error::Error>>;
-
-            struct Error {
-                code: i64,
-                message: String
-            }
-
-            struct NewPet {
-                name: String,
-                tag: Option<String>
-            }
-
-            struct Pet {
-                id: i64,
-                name: String,
-                tag: Option<String>
-            }
-
-            type Pets = Vec<Pet>;
-
-            pub trait Api: Send + Sync + 'static {
-                fn new() -> Self;
-                fn get_all_pets(&self, limit: Option<i64>) -> BoxFuture<Result<Pets>>;
-                fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<()>>;
-                fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet>>;
-            }
-
-            fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<Option<i64>>)
-                                    -> impl Future1<Item = AxJson<Pets>, Error = Error> {
-                async move {
-                    let rtn = data.get_all_pets(limit.into_inner()).await?;
-                    let rtn = AxJson(rtn);
-                    Ok(rtn)
-                }.boxed().compat()
-            }
-
-            fn create_pet<A: Api>(
-                data: AxData<A>,
-                new_pet: AxJson<NewPet>,
-            ) -> impl Future1<Item = (), Error = Error> {
-                async move {
-                    let rtn = data.create_pet(new_pet.into_inner()).await?;
-                    Ok(rtn)
-                }.boxed().compat()
-            }
-
-            fn get_pet<A: Api>(
-                data: AxData<A>,
-                pet_id: AxPath<i64>,
-            ) -> impl Future1<Item = AxJson<Pet>, Error = Error> {
-                async move {
-                    let rtn = data.get_pet(pet_id.into_inner()).await?;
-                    let rtn = AxJson(rtn);
-                    Ok(rtn)
-                }.boxed().compat()
-            }
-
-            pub fn serve<A: Api>() -> std::io::Result<()> {
-                let api = AxData::new(A::new());
-                HttpServer::new(move || {
-                    App::new()
-                        .register_data(api.clone())
-                        .service(
-                            web::resource("/pets").route(web::get().to_async(get_all_pets::<A>))
-                        )
-                        .service(
-                            web::resource("/pets/{petId}")
-                                .route(web::get().to_async(get_pet::<A>))
-                                .route(web::post().to_async(create_pet::<A>))
-                        )
-                })
-                    .bind("127.0.0.1:8000")?
-                    .run()
-            }
-        }
-        .to_string();
-        let expect = prettify_code(expect);
-        assert_diff(&code, &expect);
-    }
 
     #[test]
     fn test_snake_casify() {
