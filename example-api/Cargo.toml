@@ -9,3 +9,4 @@ hsr-codegen = { path = "../hsr-codegen" }
 
 [dependencies]
 hsr-runtime = { path = "../hsr-runtime" }
+serde = { version = "1", features = ['derive'] }

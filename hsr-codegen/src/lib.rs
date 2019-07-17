@@ -576,7 +576,7 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                         variants.push(quote! { Default(#ty) })
                     }
                     let def = quote! {
-                        # [derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+                        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
                         enum #name {
                             #(#variants,)*
                         }
@@ -679,7 +679,7 @@ fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let field = elems.keys().map(|s| ident(s));
     let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
     let toks = quote! {
-        # [derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         struct #name {
             #(#field: #fieldtype),*
         }
@@ -813,15 +813,12 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_server = generate_rust_server(&routes);
     let code = quote! {
 
+        // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::Void;
         use hsr_runtime::actix_web::{App, HttpServer};
         use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
-        use hsr_runtime::serde::{Serialize, Deserialize};
-
-        // TODO error handling
-        type Result<T> = std::result::Result<T, Box<std::error::Error>>;
 
         // Type definitions
         #rust_component_types

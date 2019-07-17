@@ -34,23 +34,20 @@ fn build_types_simple() {
         use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
-        use hsr_runtime::serde::{Serialize, Deserialize};
 
-        type Result<T> = std::result::Result<T, Box<std::error::Error>>;
-
-        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         struct Error {
             code: i64,
             message: String
         }
 
-        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         struct NewPet {
             name: String,
             tag: Option<String>
         }
 
-        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         struct Pet {
             id: i64,
             name: String,
@@ -59,12 +56,12 @@ fn build_types_simple() {
 
         type Pets = Vec<Pet>;
 
-        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         struct SomeConflict {
             message: String
         }
 
-        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
+        #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         enum CreatePetError {
             E403,
             E409(SomeConflict),
