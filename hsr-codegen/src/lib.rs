@@ -6,6 +6,7 @@ use std::path::Path;
 
 use derive_more::{Display, From};
 use derive_deref::Deref;
+use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use log::{debug, info};
@@ -99,7 +100,7 @@ fn extract_ref_name(refr: &str) -> Result<TypeName> {
     TypeName::new(parts[3].to_string())
 }
 
-fn gather_types(api: &OpenAPI) -> Result<TypeMap<Type>> {
+fn gather_types(api: &OpenAPI) -> Result<TypeMap<Either<Struct, Type>>> {
     let mut typs = TypeMap::new();
     // gather types defined in components
     if let Some(component) = &api.components {
@@ -173,7 +174,7 @@ impl Route {
                     let id = Ident::new(&parameter_data.name)?;
                     let ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-                            build_type(ref_or_schema, api)?
+                            build_type(ref_or_schema, api).and_then(discard_struct_def)?
                         }
                         _content => unimplemented!(),
                     };
@@ -185,7 +186,7 @@ impl Route {
                     let id = Ident::new(&parameter_data.name)?;
                     let mut ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-                            build_type(ref_or_schema, api)?
+                            build_type(ref_or_schema, api).and_then(discard_struct_def)?
                         }
                         _content => unimplemented!(),
                     };
@@ -250,9 +251,9 @@ impl Route {
         ident(format!("{}Err", &*self.operation_id.to_camel_case()))
     }
 
-    fn return_ty(&self) -> Result<TokenStream> {
+    fn return_ty(&self) -> TokenStream {
         let ok = match &self.return_ty.1 {
-            Some(ty) => ty.to_token()?,
+            Some(ty) => ty.to_token(),
             None => quote! { () },
         };
         // TODO what about default returns?
@@ -262,22 +263,22 @@ impl Route {
             let err = self.return_err_ty();
             quote! { std::result::Result<#ok, #err> }
         };
-        Ok(rtn)
+        rtn
     }
 
-    fn generate_interface(&self) -> Result<TokenStream> {
+    fn generate_interface(&self) -> TokenStream {
         let opid = self.op_id();
-        let rtn_ty = self.return_ty()?;
-        let paths = self
+        let rtn_ty = self.return_ty();
+        let paths: Vec<_> = self
             .path_args
             .iter()
             .map(|(id, ty)| id_ty_pair(id, ty))
-            .collect::<Result<Vec<_>>>()?;
-        let queries = self
+            .collect();
+        let queries: Vec<_> = self
             .query_args
             .iter()
             .map(|(id, ty)| id_ty_pair(id, ty))
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         let body_arg = match self.method {
             Method::Get | Method::Post(None) => quote! {},
             Method::Post(Some(ref body)) => {
@@ -286,16 +287,16 @@ impl Route {
                 } else {
                     ident("payload")
                 };
-                let ty = body.to_token()?;
+                let ty = body.to_token();
                 quote! { #name: #ty, }
             }
         };
-        Ok(quote! {
+        quote! {
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture<#rtn_ty>;
-        })
+        }
     }
 
-    fn generate_dispatcher(&self) -> Result<TokenStream> {
+    fn generate_dispatcher(&self) -> TokenStream {
         // TODO lots of duplication with interface function
         let opid = ident(&self.operation_id);
 
@@ -304,7 +305,6 @@ impl Route {
             .iter()
             .map(|(id, ty)| (ident(id), ty.to_token()))
             .unzip();
-        let path_tys = path_tys.into_iter().collect::<Result<Vec<_>>>()?;
         let path_names = &path_names;
 
         let (query_names, query_tys): (Vec<_>, Vec<_>) = self
@@ -312,7 +312,6 @@ impl Route {
             .iter()
             .map(|(id, ty)| (ident(id), ty.to_token()))
             .unzip();
-        let query_tys = query_tys.into_iter().collect::<Result<Vec<_>>>()?;
         let query_names = &query_names;
 
         let (body_into, body_arg) = match self.method {
@@ -323,13 +322,13 @@ impl Route {
                 } else {
                     ident("payload")
                 };
-                let ty = body.to_token()?;
+                let ty = body.to_token();
                 (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
             }
         };
         let rtnty = match &self.return_ty.1 {
             Some(ty) => {
-                let ty = ty.to_token()?;
+                let ty = ty.to_token();
                 quote! { AxJson<#ty> }
             }
             None => quote! { () },
@@ -358,7 +357,7 @@ impl Route {
                 }.boxed().compat()
             }
         };
-        Ok(code)
+        code
     }
 }
 
@@ -385,7 +384,7 @@ fn get_type_from_response(
             .schema
             .as_ref()
             .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-        Ok(Some(build_type(&ref_or_schema, api)?))
+        Ok(Some(build_type(&ref_or_schema, api).and_then(discard_struct_def)?))
     }
 }
 
@@ -489,7 +488,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
                     .schema
                     .as_ref()
                     .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-                Some(build_type(&ref_or_schema, api)?)
+                Some(build_type(&ref_or_schema, api).and_then(discard_struct_def)?)
             } else {
                 None
             };
@@ -510,48 +509,49 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-fn generate_rust_types(typs: &TypeMap<Type>) -> Result<TokenStream> {
+fn generate_rust_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
-        let def = if let Type::Struct(fields) = typ {
-            define_struct(typename, fields)?
-        } else {
-            let name = ident(typename);
-            let typ = typ.to_token()?;
-            // make a type alias
-            quote! {
-                type #name = #typ;
+        let def = match typ {
+            Either::Left(strukt) => define_struct(typename, strukt),
+            Either::Right(typ) => {
+                let name = ident(typename);
+                let typ = typ.to_token();
+                // make a type alias
+                quote! {
+                    type #name = #typ;
+                }
             }
         };
         tokens.extend(def);
     }
-    Ok(tokens)
+    tokens
 }
 
-fn generate_rust_interface(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
+fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
     let mut methods = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            methods.extend(route.generate_interface()?);
+            methods.extend(route.generate_interface());
         }
     }
-    Ok(quote! {
+    quote! {
         pub trait Api: Send + Sync + 'static {
             fn new() -> Self;
 
             #methods
         }
-    })
+    }
 }
 
-fn generate_rust_dispatchers(routes: &Map<Vec<Route>>) -> Result<TokenStream> {
+fn generate_rust_dispatchers(routes: &Map<Vec<Route>>) -> TokenStream {
     let mut dispatchers = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            dispatchers.extend(route.generate_dispatcher()?);
+            dispatchers.extend(route.generate_dispatcher());
         }
     }
-    Ok(quote! {#dispatchers})
+    quote! {#dispatchers}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -564,55 +564,64 @@ enum Type {
     Option(Box<Type>),
     Any,
     Named(TypeName),
-    // TODO not sure this should be part of this enum
-    Struct(Map<Type>),
 }
 
-fn define_struct(name: &TypeName, elems: &Map<Type>) -> Result<TokenStream> {
-    if elems.is_empty() {
-        return Err(Error::EmptyStruct);
+struct Struct(Map<Type>);
+
+impl Struct {
+    fn new(fields: Map<Type>) -> Result<Struct> {
+        if fields.is_empty() {
+            return Err(Error::EmptyStruct);
+        }
+        // TODO other validation?
+        Ok(Struct(fields))
     }
+
+    fn from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Self> {
+        let mut fields = Map::new();
+        let required_args: Set<String> = obj.required().iter().cloned().collect();
+        for (name, schemaref) in obj.properties() {
+            let schemaref = schemaref.clone().unbox();
+            let mut inner = build_type(&schemaref, api).and_then(discard_struct_def)?;
+            if !required_args.contains(name) {
+                inner = Type::Option(Box::new(inner));
+            }
+            assert!(fields.insert(name.clone(), inner).is_none());
+        }
+        Self::new(fields)
+    }
+
+}
+
+fn define_struct(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
-    let fieldtype = elems
+    let fieldtype: Vec<_> = elems
         .values()
         .map(|s| s.to_token())
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
     let toks = quote! {
         struct #name {
             #(#field: #fieldtype),*
         }
     };
-    Ok(toks)
+    toks
 }
 
 impl Type {
-    fn is_complex(&self) -> bool {
-        match self {
-            Type::Array(typ) => match &**typ {
-                // Vec<i32>, Vec<Vec<i32>> are simple, Vec<MyStruct> is complex
-                Type::Array(inner) => inner.is_complex(),
-                Type::Struct(_) => true,
-                _ => false,
-            },
-            Type::Struct(_) => true,
-            _ => false,
-        }
-    }
-
-    fn to_token(&self) -> Result<TokenStream> {
+    fn to_token(&self) -> TokenStream {
         use Type::*;
-        let s = match self {
+        match self {
             String => quote! { String },
             F64 => quote! { f64 },
             I64 => quote! { i64 },
             Bool => quote! { bool },
             Array(elem) => {
-                let inner = elem.to_token()?;
+                let inner = elem.to_token();
                 quote! { Vec<#inner> }
             }
             Option(typ) => {
-                let inner = typ.to_token()?;
+                let inner = typ.to_token();
                 quote! { Option<#inner> }
             }
             Named(name) => {
@@ -620,10 +629,8 @@ impl Type {
                 quote! { #name }
             }
             // TODO handle Any properly
-            Any => quote! { Any },
-            Struct(_) => return Err(Error::NotStructurallyTyped),
-        };
-        Ok(s)
+            Any => unimplemented!()
+        }
     }
 }
 
@@ -648,26 +655,12 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
-fn type_from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Type> {
-    let mut fields = Map::new();
-    let required_args: Set<String> = obj.required().iter().cloned().collect();
-    for (name, schemaref) in obj.properties() {
-        let schemaref = schemaref.clone().unbox();
-        let mut inner = build_type(&schemaref, api)?;
-        if !required_args.contains(name) {
-            inner = Type::Option(Box::new(inner));
-        }
-        assert!(fields.insert(name.clone(), inner).is_none());
-    }
-    Ok(Type::Struct(fields))
-}
-
 // TODO this probably doesn't need to accept the whole API object
-fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type> {
+fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Either<Struct, Type>> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
             let name = validate_ref_id(reference, api)?;
-            return Ok(Type::Named(name));
+            return Ok(Either::Right(Type::Named(name)));
         }
         ReferenceOr::Item(item) => item,
     };
@@ -675,9 +668,9 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
             if obj.properties.is_empty() {
-                return Ok(Type::Any);
+                return Ok(Either::Right(Type::Any));
             } else {
-                return type_from_objlike(obj, api);
+                return Struct::from_objlike(obj, api).map(Either::Left);
             }
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
@@ -691,17 +684,24 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
         ApiType::Boolean {} => Type::Bool,
         ApiType::Array(arr) => {
             let items = arr.items.clone().unbox();
-            let inner = build_type(&items, api)?;
+            let inner = build_type(&items, api).and_then(discard_struct_def)?;
             Type::Array(Box::new(inner))
         }
         ApiType::Object(obj) => {
-            return type_from_objlike(obj, api);
+            return Struct::from_objlike(obj, api).map(Either::Left);
         }
     };
-    Ok(typ)
+    Ok(Either::Right(typ))
 }
 
-fn generate_rust_server(routemap: &Map<Vec<Route>>) -> Result<TokenStream> {
+fn discard_struct_def(ty: Either<Struct, Type>) -> Result<Type> {
+    match ty {
+        Either::Right(inner) => Ok(inner),
+        Either::Left(_) => return Err(Error::NotStructurallyTyped)
+    }
+}
+
+fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
     let resources: Vec<_> = routemap
         .iter()
         .map(|(path, routes)| {
@@ -728,15 +728,15 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> Result<TokenStream> {
                 .run()
         }
     };
-    Ok(server)
+    server
 }
 
-fn id_ty_pair(id: &Ident, ty: &Type) -> Result<TokenStream> {
+fn id_ty_pair(id: &Ident, ty: &Type) -> TokenStream {
     let id = ident(id);
-    let ty = ty.to_token()?;
-    Ok(quote! {
+    let ty = ty.to_token();
+    quote! {
         #id: #ty
-    })
+    }
 }
 
 pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
@@ -748,10 +748,10 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
     let typs = gather_types(&api)?;
     let routes = gather_routes(&api)?;
-    let rust_defs = generate_rust_types(&typs)?;
-    let rust_trait = generate_rust_interface(&routes)?;
-    let rust_dispatchers = generate_rust_dispatchers(&routes)?;
-    let rust_server = generate_rust_server(&routes)?;
+    let rust_defs = generate_rust_types(&typs);
+    let rust_trait = generate_rust_interface(&routes);
+    let rust_dispatchers = generate_rust_dispatchers(&routes);
+    let rust_server = generate_rust_server(&routes);
     let code = quote! {
 
         use actix_web::{App, HttpServer};
