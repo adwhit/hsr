@@ -78,7 +78,8 @@ fn build_types_simple() {
         fn get_all_pets<A: Api>(data: AxData<A>, limit: AxQuery<Option<i64>>)
                                 -> impl Future1<Item = AxJson<Pets>, Error = Void> {
             data.get_all_pets(limit.into_inner())
-                .map(|v| Ok(AxJson(v)))
+                .map(Ok)
+                .map(|res| res.map(AxJson))
                 .boxed()
                 .compat()
         }

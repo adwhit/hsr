@@ -353,13 +353,17 @@ impl Route {
             None => quote! { () },
         };
 
-        // If return type is not null, we wrap it in AxJson
-        // XXX This is wrong, could end up wrapping a Result
-        let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
-            quote! { .map(AxJson) }
-        });
-
         let return_err_ty = self.return_err_ty().unwrap_or(quote! { Void });
+        // If return type is not a Result, make it into one
+        let maybe_wrap_into_result = if self.return_err_ty().is_none() {
+            Some(quote! { .map(Ok) })
+        } else {
+            None
+        };
+        // If return 'Ok' type is not null, we wrap it in AxJson
+        let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
+            quote! { .map(|res| res.map(AxJson)) }
+        });
 
         let code = quote! {
             fn #opid<A: Api>(
@@ -374,6 +378,7 @@ impl Route {
                     #body_into
                 )
                     // we have to turn the output into a result type
+                    #maybe_wrap_into_result
                     #maybe_wrap_rtnval
                     .boxed()
                     .compat()
@@ -543,7 +548,7 @@ fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenS
                 let typ = typ.to_token();
                 // make a type alias
                 quote! {
-                    type #name = #typ;
+                    pub type #name = #typ;
                 }
             }
         };
@@ -561,7 +566,7 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                 (&[], Some(_)) => {}      // We will use the lone default type
                 (&[ref _one], None) => {} // We will use the lone error type
                 (multiple, mb_default) => {
-                    let name = route.return_err_ty().unwrap();
+                    let name = ident(route.return_err_ty().unwrap());
                     let mut variants: Vec<_> = multiple
                         .iter()
                         .map(|(code, mb_ty)| {
@@ -575,11 +580,14 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                     if let Some(ty) = mb_default.as_ref().map(|ty| ty.to_token()) {
                         variants.push(quote! { Default(#ty) })
                     }
+                    let derives = get_derive_tokens();
+                    let impl_response = impl_responder(&name);
                     let def = quote! {
-                        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-                        enum #name {
+                        #derives
+                        pub enum #name {
                             #(#variants,)*
                         }
+                        #impl_response
                     };
                     tokens.extend(def);
                 }
@@ -678,13 +686,35 @@ fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
     let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
+    let impl_response = impl_responder(&name);
+    let derives = get_derive_tokens();
     let toks = quote! {
-        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        struct #name {
+        #derives
+        pub struct #name {
             #(#field: #fieldtype),*
         }
+        #impl_response
     };
     toks
+}
+
+fn get_derive_tokens() -> TokenStream {
+    quote! {
+        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+    }
+}
+
+// TODO I reckon this should be in `hsr_runtime` as a macro
+fn impl_responder(name: &QIdent) -> TokenStream {
+    quote! {
+        impl Responder for #name {
+            type Error = <AxJson<#name> as Responder>::Error;
+            type Future = <AxJson<#name> as Responder>::Future;
+            fn respond_to(self, r: &HttpRequest) -> Self::Future {
+                AxJson(self).respond_to(r)
+            }
+        }
+    }
 }
 
 impl Type {
@@ -815,7 +845,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
 
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::Void;
-        use hsr_runtime::actix_web::{App, HttpServer};
+        use hsr_runtime::actix_web::{App, HttpServer, HttpRequest, Responder};
         use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
