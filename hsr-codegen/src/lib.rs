@@ -21,6 +21,7 @@ fn ident(s: impl fmt::Display) -> QIdent {
 }
 
 type Map<T> = std::collections::BTreeMap<String, T>;
+type IdMap = std::collections::BTreeMap<Ident, Type>;
 type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
 type Set<T> = std::collections::BTreeSet<T>;
 
@@ -54,6 +55,8 @@ pub enum Error {
     BadIdentifier(String),
     #[fail(display = "{} is not a valid type name", _0)]
     BadTypeName(String),
+    #[fail(display = "Malformed codegen")]
+    BadCodegen
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -140,7 +143,7 @@ struct Route {
     operation_id: Ident,
     method: Method,
     path_args: Vec<(Ident, Type)>,
-    query_args: Vec<(Ident, Type)>,
+    query_args: IdMap,
     segments: Vec<PathSegment>,
     return_ty: (u16, Option<Type>),
     err_tys: Vec<(u16, Option<Type>)>,
@@ -162,7 +165,7 @@ impl Route {
             None => Err(Error::NoOperationId(path.into())),
         }?;
         let mut path_args = vec![];
-        let mut query_args = vec![];
+        let mut query_args = IdMap::new();
         for parameter in parameters {
             use openapiv3::Parameter::*;
             let parameter = dereference(parameter, api.components.as_ref().map(|c| &c.parameters))?;
@@ -198,7 +201,8 @@ impl Route {
                     if !parameter_data.required {
                         ty = Type::Option(Box::new(ty));
                     }
-                    query_args.push((id, ty));
+                    // TODO check for duplicates
+                    assert!(query_args.insert(id, ty).is_none());
                 }
                 _ => todo!(),
             }
@@ -258,8 +262,18 @@ impl Route {
         })
     }
 
-    fn op_id(&self) -> QIdent {
-        ident(&self.operation_id)
+    fn generate_query_type_name(&self) -> Option<TypeName> {
+        if self.query_args.is_empty() {
+            None
+        } else {
+            Some(TypeName::new(format!("{}Query", &*self.operation_id.to_camel_case())).unwrap())
+        }
+    }
+
+    fn generate_query_type(&self) -> Option<TokenStream> {
+        let name = self.generate_query_type_name()?;
+        let def = Struct::new(self.query_args.clone()).unwrap();
+        Some(generate_struct_def(&name, &def))
     }
 
     /// Fetch the name of the return type identified as an error, if it exists.
@@ -271,7 +285,7 @@ impl Route {
             (&[], Some(default_ty)) => Some(default_ty.to_token()),
             (&[(_, Some(ref err_ty))], None) => Some(err_ty.to_token()),
             _many => {
-                let manyid = ident(format!("{}Error", &*self.operation_id.to_camel_case()));
+                let manyid = TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap();
                 Some(quote! { #manyid })
             }
         }
@@ -292,7 +306,7 @@ impl Route {
 
     /// Generate the function signature compatible with the Route
     fn generate_signature(&self) -> TokenStream {
-        let opid = self.op_id();
+        let opid = &self.operation_id;
         let return_ty = self.return_ty();
         let paths: Vec<_> = self
             .path_args
@@ -331,7 +345,7 @@ impl Route {
     /// and Error types.
     fn generate_dispatcher(&self) -> TokenStream {
         // TODO lots of duplication with interface function
-        let opid = ident(&self.operation_id);
+        let opid = &self.operation_id;
 
         let (path_names, path_tys): (Vec<_>, Vec<_>) = self
             .path_args
@@ -340,13 +354,12 @@ impl Route {
             .unzip();
         let path_names = &path_names;
 
-        // FIXME this is wrong, query must be key-value pairs
-        let (query_names, query_tys): (Vec<_>, Vec<_>) = self
-            .query_args
-            .iter()
-            .map(|(id, ty)| (ident(id), ty.to_token()))
-            .unzip();
-        let query_names = &query_names;
+        let query_keys = &self.query_args.keys().collect::<Vec<_>>();
+        let query_pattern = self.generate_query_type_name().map(|name| {
+            quote! {
+                AxQuery(#name { #(#query_keys),* }): AxQuery<#name>
+            }
+        });
 
         let (body_into, body_arg) = match self.method {
             Method::Get | Method::Post(None) => (quote! {}, quote! {}),
@@ -388,7 +401,7 @@ impl Route {
             fn #opid<A: Api>(
                 data: AxData<A>,
                 #(#path_names: AxPath<#path_tys>,)*
-                #(#query_names: AxQuery<#query_tys>,)*
+                #query_pattern
                 #body_arg
             ) -> impl Future1<Item = (#return_ty, StatusCode), Error = ()> {
                 // call our API handler function with requisite arguments, returning a Future3
@@ -397,7 +410,7 @@ impl Route {
                     let out = data.#opid(
                         // TODO we should destructure everything through pattern-matching the signature
                         #(#path_names.into_inner(),)*
-                        #(#query_names.into_inner(),)*
+                        #(#query_keys,)*
                         #body_into
                     )
                     // turn the output into a result type, if not already
@@ -470,6 +483,14 @@ impl Ident {
     }
 }
 
+impl quote::ToTokens for Ident {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let id = ident(&self.0);
+        id.to_tokens(tokens)
+    }
+}
+
+
 /// A string which is a valid name for type (CamelCase)
 ///
 /// Do not construct directly, instead use `new`
@@ -483,6 +504,13 @@ impl TypeName {
         } else {
             Err(Error::BadTypeName(val))
         }
+    }
+}
+
+impl quote::ToTokens for TypeName {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let id = ident(&self.0);
+        id.to_tokens(tokens)
     }
 }
 
@@ -583,11 +611,10 @@ fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenS
         let def = match typ {
             Either::Left(strukt) => generate_struct_def(typename, strukt),
             Either::Right(typ) => {
-                let name = ident(typename);
                 let typ = typ.to_token();
                 // make a type alias
                 quote! {
-                    pub type #name = #typ;
+                    pub type #typename = #typ;
                 }
             }
         };
@@ -600,6 +627,8 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (_path, routes) in routemap {
         for route in routes {
+            // Construct the error type, if necessary
+            // TODO break this into its own function
             match (&route.err_tys[..], &route.default_err_ty) {
                 (&[], None) => {}         // Nothing to do
                 (&[], Some(_)) => {}      // We will use the lone default type
@@ -620,16 +649,18 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                         variants.push(quote! { Default(#ty) })
                     }
                     let derives = get_derive_tokens();
-                    let impl_response = impl_responder(&name);
                     let def = quote! {
                         #derives
                         pub enum #name {
                             #(#variants,)*
                         }
-                        #impl_response
                     };
                     tokens.extend(def);
                 }
+            }
+            // construct the query type
+            if let Some(queryty) = route.generate_query_type() {
+                tokens.extend(queryty)
             }
         }
     }
@@ -674,10 +705,10 @@ enum Type {
     Named(TypeName),
 }
 
-struct Struct(Map<Type>);
+struct Struct(IdMap);
 
 impl Struct {
-    fn new(fields: Map<Type>) -> Result<Struct> {
+    fn new(fields: IdMap) -> Result<Struct> {
         if fields.is_empty() {
             return Err(Error::EmptyStruct);
         }
@@ -686,7 +717,7 @@ impl Struct {
     }
 
     fn from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Self> {
-        let mut fields = Map::new();
+        let mut fields = IdMap::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
@@ -694,7 +725,8 @@ impl Struct {
             if !required_args.contains(name) {
                 inner = Type::Option(Box::new(inner));
             }
-            assert!(fields.insert(name.clone(), inner).is_none());
+            let name = Ident::new(name)?;
+            assert!(fields.insert(name, inner).is_none());
         }
         Self::new(fields)
     }
@@ -725,14 +757,12 @@ fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
     let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
-    let impl_response = impl_responder(&name);
     let derives = get_derive_tokens();
     let toks = quote! {
         #derives
         pub struct #name {
             #(pub #field: #fieldtype),*
         }
-        #impl_response
     };
     toks
 }
@@ -740,21 +770,6 @@ fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
 fn get_derive_tokens() -> TokenStream {
     quote! {
         # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-    }
-}
-
-// TODO I reckon this should be in `hsr_runtime` as a macro
-// TODO I don't think we actually want to use this, better to just
-// wrap in AxJson
-fn impl_responder(name: &QIdent) -> TokenStream {
-    quote! {
-        impl Responder for #name {
-            type Error = <AxJson<#name> as Responder>::Error;
-            type Future = <AxJson<#name> as Responder>::Future;
-            fn respond_to(self, r: &HttpRequest) -> Self::Future {
-                AxJson(self).respond_to(r)
-            }
-        }
     }
 }
 
@@ -836,7 +851,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
         .map(|(path, routes)| {
             let (meth, opid): (Vec<_>, Vec<_>) = routes
                 .iter()
-                .map(|route| (ident(&route.method), ident(&route.operation_id)))
+                .map(|route| (ident(&route.method), &route.operation_id))
                 .unzip();
             quote! {
                 web::resource(#path)
@@ -863,7 +878,6 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
 }
 
 fn id_ty_pair(id: &Ident, ty: &Type) -> TokenStream {
-    let id = ident(id);
     let ty = ty.to_token();
     quote! {
         #id: #ty
@@ -905,24 +919,28 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         // Server
         #rust_server
     };
-    Ok(prettify_code(code.to_string()))
+    prettify_code(code.to_string())
 }
 
-pub fn prettify_code(input: String) -> String {
+/// Run the code through `rustfmt`.
+pub fn prettify_code(input: String) -> Result<String> {
     let mut buf = Vec::new();
     {
         let mut config = rustfmt_nightly::Config::default();
         config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
         config.set().edition(rustfmt_nightly::Edition::Edition2018);
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
-        session.format(rustfmt_nightly::Input::Text(input)).unwrap();
+        session.format(rustfmt_nightly::Input::Text(input)).map_err(|_e| Error::BadCodegen)?;
+    }
+    if buf.is_empty() {
+        return Err(Error::BadCodegen)
     }
     let mut s = String::from_utf8(buf).unwrap();
     // TODO no idea why this is necessary but... it is
     if s.starts_with("stdin:\n\n") {
         s = s.split_off(8);
     }
-    s
+    Ok(s)
 }
 
 #[cfg(test)]

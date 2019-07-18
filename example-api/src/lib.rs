@@ -28,7 +28,7 @@ impl my_api::Api for Api {
     }
 
     // TODO all these i64s should be u64s
-    fn get_all_pets(&self, limit: i64, filter: Option<String>) -> BoxFuture<Pets> {
+    fn get_all_pets(&self, filter: Option<String>, limit: i64) -> BoxFuture<Pets> {
         async move {
             let regex = if let Some(filter) = filter {
                 Regex::new(&filter).unwrap()
