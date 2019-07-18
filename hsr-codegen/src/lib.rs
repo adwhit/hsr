@@ -221,7 +221,7 @@ impl Route {
                 .map_err(|_| Error::Todo(format!("Invalid status code: {}", code)))?;
             if status.is_success() {
                 if success_code.replace(status).is_some() {
-                    return Err(Error::Todo("Expeced exactly one 'success' status".into()));
+                    return Err(Error::Todo("Expected exactly one 'success' status".into()));
                 }
             } else if status.is_client_error() {
                 error_codes.push(status)
@@ -231,7 +231,7 @@ impl Route {
         }
 
         let return_ty = success_code
-            .ok_or_else(|| Error::Todo("Expeced exactly one 'success' status".into()))
+            .ok_or_else(|| Error::Todo("Expected exactly one 'success' status".into()))
             .and_then(|status| {
                 let ref_or_resp = &responses.responses[status.as_str()];
                 get_type_from_response(&ref_or_resp, api).map(|ty| (status, ty))
@@ -407,6 +407,8 @@ impl Route {
             quote! { .map(AxJson) }
         });
 
+        let status_code = self.return_ty.0.as_u16();
+
         let code = quote! {
             fn #opid<A: Api>(
                 data: AxData<A>,
@@ -431,7 +433,7 @@ impl Route {
                     // wrap returnval in AxJson, if necessary
                     #maybe_wrap_return_val
                     // give outcome a status code (simple way of overriding the Responder return type)
-                    .map(|ok| (ok, StatusCode::OK))
+                    .map(|return_val| (return_val, StatusCode::from_u16(#status_code).unwrap()))
                     .map_err(|_| ())
                 }
                 // turn it into a Future1
@@ -648,7 +650,7 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
                     let mut variants: Vec<_> = multiple
                         .iter()
                         .map(|(code, mb_ty)| {
-                            let statuscode = ident(format!("E{}", code));
+                            let statuscode = ident(format!("E{}", code.as_str()));
                             match mb_ty.as_ref().map(|ty| ty.to_token()) {
                                 Some(ty) => quote! { #statuscode(#ty) },
                                 None => quote! { #statuscode },
@@ -901,12 +903,19 @@ pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
 
 pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
+    debug!("Gather types");
     let typs = gather_types(&api)?;
+    debug!("Gather routes");
     let routes = gather_routes(&api)?;
+    debug!("Generate component types");
     let rust_component_types = generate_rust_component_types(&typs);
+    debug!("Generate route types");
     let rust_route_types = generate_rust_route_types(&routes);
+    debug!("Generate API trait");
     let rust_trait = generate_rust_interface(&routes);
+    debug!("Generate dispatchers");
     let rust_dispatchers = generate_rust_dispatchers(&routes);
+    debug!("Generate server");
     let rust_server = generate_rust_server(&routes);
     let code = quote! {
 
@@ -929,6 +938,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         // Server
         #rust_server
     };
+    debug!("Prettify");
     prettify_code(code.to_string())
 }
 

@@ -36,33 +36,33 @@ fn build_types_simple() {
         use hsr_runtime::futures1::Future as Future1;
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        struct Error {
-            code: i64,
-            message: String
+        pub struct Error {
+            pub code: i64,
+            pub message: String
         }
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        struct NewPet {
-            name: String,
-            tag: Option<String>
+        pub struct NewPet {
+            pub name: String,
+            pub tag: Option<String>
         }
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        struct Pet {
-            id: i64,
-            name: String,
-            tag: Option<String>
+        pub struct Pet {
+            pub id: i64,
+            pub name: String,
+            pub tag: Option<String>
         }
 
-        type Pets = Vec<Pet>;
+        pub type Pets = Vec<Pet>;
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        struct SomeConflict {
-            message: String
+        pub struct SomeConflict {
+            pub message: String
         }
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-        enum CreatePetError {
+        pub enum CreatePetError {
             E403,
             E409(SomeConflict),
             Default(Error)
@@ -123,6 +123,6 @@ fn build_types_simple() {
         }
     }
     .to_string();
-    let expect = hsr_codegen::prettify_code(expect);
+    let expect = hsr_codegen::prettify_code(expect).unwrap();
     assert_diff(&code, &expect);
 }
