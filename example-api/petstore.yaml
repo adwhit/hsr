@@ -17,10 +17,16 @@ paths:
         - name: limit
           in: query
           description: How many items to return at one time (max 100)
-          required: false
+          required: true
           schema:
             type: integer
             format: int32
+        - name: spinach
+          in: query
+          description: How much spinach in the broth
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: A paged array of pets

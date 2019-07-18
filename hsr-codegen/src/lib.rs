@@ -376,8 +376,6 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #(#query_names: AxQuery<#query_tys>,)*
                 #body_arg
-                // TODO this future is gross but unfortunately Future1 demands there be an Error type,
-                // but we do not want to use it because that uses Actix's error pathway
             ) -> impl Future1<Item = (#rtnty, StatusCode), Error = ()> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
