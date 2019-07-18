@@ -20,6 +20,7 @@ structopt = "0.2.18"
 syn = "0.15.39"
 derive_deref = "1.1.0"
 either = "1.5.2"
+indexmap = "1.0.2"
 
 [dev-dependencies]
 diff = "0.1.11"

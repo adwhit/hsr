@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 #![feature(todo_macro)]
 
+use std::collections::{BTreeMap, BTreeSet as Set};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -10,6 +11,8 @@ use derive_more::{Display, From};
 use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
+// TODO https://github.com/glademiller/openapiv3/issues/10
+// use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
 use proc_macro2::{Ident as QIdent, TokenStream};
@@ -20,11 +23,10 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
-// TODO use OrdMap to preserver ordering
-type Map<T> = std::collections::BTreeMap<String, T>;
-type IdMap = std::collections::BTreeMap<Ident, Type>;
-type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
-type Set<T> = std::collections::BTreeSet<T>;
+// TODO use IndexMap to preserver ordering
+type Map<T> = BTreeMap<String, T>;
+type IdMap = BTreeMap<Ident, Type>;
+type TypeMap<T> = BTreeMap<TypeName, T>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -57,7 +59,7 @@ pub enum Error {
     #[fail(display = "{} is not a valid type name", _0)]
     BadTypeName(String),
     #[fail(display = "Malformed codegen")]
-    BadCodegen
+    BadCodegen,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -286,7 +288,8 @@ impl Route {
             (&[], Some(default_ty)) => Some(default_ty.to_token()),
             (&[(_, Some(ref err_ty))], None) => Some(err_ty.to_token()),
             _many => {
-                let manyid = TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap();
+                let manyid =
+                    TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap();
                 Some(quote! { #manyid })
             }
         }
@@ -497,7 +500,6 @@ impl quote::ToTokens for Ident {
         id.to_tokens(tokens)
     }
 }
-
 
 /// A string which is a valid name for type (CamelCase)
 ///
@@ -938,10 +940,12 @@ pub fn prettify_code(input: String) -> Result<String> {
         config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
         config.set().edition(rustfmt_nightly::Edition::Edition2018);
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
-        session.format(rustfmt_nightly::Input::Text(input)).map_err(|_e| Error::BadCodegen)?;
+        session
+            .format(rustfmt_nightly::Input::Text(input))
+            .map_err(|_e| Error::BadCodegen)?;
     }
     if buf.is_empty() {
-        return Err(Error::BadCodegen)
+        return Err(Error::BadCodegen);
     }
     let mut s = String::from_utf8(buf).unwrap();
     // TODO no idea why this is necessary but... it is
