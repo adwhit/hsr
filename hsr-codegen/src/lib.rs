@@ -323,7 +323,7 @@ impl Route {
             .map(|(id, ty)| id_ty_pair(id, ty))
             .collect();
         let body_arg = match self.method {
-            Method::Get | Method::Post(None) => quote! {},
+            Method::Get | Method::Post(None) => None,
             Method::Post(Some(ref body)) => {
                 let name = if let Type::Named(typename) = body {
                     ident(typename.to_string().to_snake_case())
@@ -331,7 +331,7 @@ impl Route {
                     ident("payload")
                 };
                 let ty = body.to_token();
-                quote! { #name: #ty, }
+                Some(quote! { #name: #ty, })
             }
         };
         quote! {
@@ -371,7 +371,7 @@ impl Route {
                     variant_matches.push(quote! { Default(_) });
                 }
                 let derives = get_derive_tokens();
-                Some(quote! {
+                let code = quote! {
                     #derives
                     pub enum #name {
                         #(#variants,)*
@@ -386,12 +386,16 @@ impl Route {
                         }
                     }
 
-                    impl hsr_runtime::actix_web::ResponseError for #name {
-                        fn error_response(&self) -> HttpResponse {
-                            HttpResponse::new(self.get_status_code())
+                    impl Responder for #name {
+                        type Error = Void;
+                        type Future = Result<HttpResponse, Void>;
+
+                        fn respond_to(self, _: &HttpRequest) -> Self::Future {
+                            unimplemented!()
                         }
                     }
-                })
+                };
+                Some(code)
             }
         }
     }
@@ -428,18 +432,14 @@ impl Route {
             }
         });
 
-        let (body_into, body_arg) = match self.method {
-            Method::Get | Method::Post(None) => (quote! {}, quote! {}),
+        let body_arg = match self.method {
+            Method::Get | Method::Post(None) => None,
             Method::Post(Some(ref body)) => {
-                let name = if let Type::Named(typename) = body {
-                    ident(typename.to_string().to_snake_case())
-                } else {
-                    ident("payload")
-                };
                 let ty = body.to_token();
-                (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
+                Some(quote! { AxJson(body): AxJson<#ty>, })
             }
         };
+        let body_into = body_arg.as_ref().map(|_| ident("body"));
         let return_ty = &self
             .return_ty
             .1
@@ -947,8 +947,9 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let code = quote! {
 
         // TODO is there a way to re-export the serde derive macros?
+        use hsr_runtime::Void;
         use hsr_runtime::actix_web::{
-            App, HttpServer, HttpResponse,
+            App, HttpServer, HttpRequest, HttpResponse, Responder,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             http::StatusCode,
         };
