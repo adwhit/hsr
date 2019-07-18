@@ -346,26 +346,50 @@ impl Route {
             (&[], None) => None,         // Nothing to do
             (&[], Some(_)) => None,      // We will use the lone default type
             (&[ref _one], None) => None, // We will use the lone error type
-            (multiple, mb_default) => {
+            _other => {
                 let name = ident(self.return_err_ty().unwrap());
-                let mut variants: Vec<_> = multiple
-                    .iter()
-                    .map(|(code, mb_ty)| {
-                        let statuscode = ident(format!("E{}", code.as_str()));
-                        match mb_ty.as_ref().map(|ty| ty.to_token()) {
-                            Some(ty) => quote! { #statuscode(#ty) },
-                            None => quote! { #statuscode },
+                let mut variants = vec![];
+                let mut variant_matches = vec![];
+                let mut status_codes = vec![];
+                for (code, mb_ty) in &self.err_tys {
+                    status_codes.push(code.as_u16());
+                    let variant_name = ident(format!("E{}", code.as_str()));
+                    match mb_ty.as_ref().map(|ty| ty.to_token()) {
+                        Some(ty) => {
+                            variants.push(quote! { #variant_name(#ty) });
+                            variant_matches.push(quote! { #variant_name(_) });
                         }
-                    })
-                    .collect();
-                if let Some(ty) = mb_default.as_ref().map(|ty| ty.to_token()) {
-                    variants.push(quote! { Default(#ty) })
+                        None => {
+                            variants.push(quote! { #variant_name });
+                            variant_matches.push(quote! { #variant_name });
+                        }
+                    }
+                }
+                // maybe add a default variant
+                if let Some(ty) = self.default_err_ty.as_ref().map(|ty| ty.to_token()) {
+                    variants.push(quote! { Default(#ty) });
+                    variant_matches.push(quote! { Default(_) });
                 }
                 let derives = get_derive_tokens();
                 Some(quote! {
                     #derives
                     pub enum #name {
                         #(#variants,)*
+                    }
+
+                    impl hsr_runtime::HasStatusCode for #name {
+                        fn get_status_code(&self) -> StatusCode {
+                            use #name::*;
+                            match self {
+                                #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
+                            }
+                        }
+                    }
+
+                    impl hsr_runtime::actix_web::ResponseError for #name {
+                        fn error_response(&self) -> HttpResponse {
+                            HttpResponse::new(self.get_status_code())
+                        }
                     }
                 })
             }
@@ -448,7 +472,7 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future1<Item = (#return_ty, StatusCode), Error = ()> {
+            ) -> impl Future1<Item = (#return_ty, StatusCode), Error = #return_err_ty> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
@@ -467,7 +491,6 @@ impl Route {
                     #maybe_wrap_return_val
                     // give outcome a status code (simple way of overriding the Responder return type)
                     .map(|return_val| (return_val, StatusCode::from_u16(#status_code).unwrap()))
-                    .map_err(|_| ())
                 }
                 // turn it into a Future1
                 .boxed()
@@ -925,7 +948,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
 
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::actix_web::{
-            App, HttpServer,
+            App, HttpServer, HttpResponse,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             http::StatusCode,
         };
