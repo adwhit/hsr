@@ -21,9 +21,9 @@ paths:
           schema:
             type: integer
             format: int32
-        - name: spinach
+        - name: filter
           in: query
-          description: How much spinach in the broth
+          description: regex by which to filter pet names
           required: false
           schema:
             type: string

@@ -865,7 +865,6 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let code = quote! {
 
         // TODO is there a way to re-export the serde derive macros?
-        use hsr_runtime::{Void, result_to_either};
         use hsr_runtime::actix_web::{
             App, HttpServer, HttpRequest, Responder,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},

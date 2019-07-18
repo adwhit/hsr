@@ -1,7 +1,8 @@
 #![feature(async_await)]
 
-use hsr_runtime::futures3::future::{self, BoxFuture, FutureExt};
+use hsr_runtime::futures3::future::{BoxFuture, FutureExt};
 use std::sync::Mutex;
+use regex::Regex;
 
 pub mod my_api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
@@ -26,13 +27,16 @@ impl my_api::Api for Api {
         }
     }
 
-    fn get_all_pets(&self, limit: i64, spinach: Option<String>) -> BoxFuture<Pets> {
+    // TODO all these i64s should be u64s
+    fn get_all_pets(&self, limit: i64, filter: Option<String>) -> BoxFuture<Pets> {
         async move {
-            if let Some(s) = spinach {
-                println!("Amount of spinach: {}", s)
-            }
+            let regex = if let Some(filter) = filter {
+                Regex::new(&filter).unwrap()
+            } else {
+                Regex::new(".?").unwrap()
+            };
             let pets = self.pets.lock().unwrap();
-            pets.iter().take(limit as usize).cloned().collect()
+            pets.iter().take(limit as usize).filter(|p| regex.is_match(&p.name)).cloned().collect()
         }
             .boxed()
     }
