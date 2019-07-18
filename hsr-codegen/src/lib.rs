@@ -326,6 +326,7 @@ impl Route {
             .unzip();
         let path_names = &path_names;
 
+        // FIXME this is wrong, query must be key-value pairs
         let (query_names, query_tys): (Vec<_>, Vec<_>) = self
             .query_args
             .iter()
@@ -345,24 +346,28 @@ impl Route {
                 (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
             }
         };
-        let rtnty = match &self.return_ty.1 {
-            Some(ty) => {
+        let rtnty = &self
+            .return_ty
+            .1
+            .as_ref()
+            .map(|ty| {
                 let ty = ty.to_token();
                 quote! { AxJson<#ty> }
-            }
-            None => quote! { () },
-        };
+            })
+            .unwrap_or(quote! { () });
 
         let return_err_ty = self.return_err_ty().unwrap_or(quote! { Void });
+
         // If return type is not a Result, make it into one
         let maybe_wrap_into_result = if self.return_err_ty().is_none() {
-            Some(quote! { .map(Ok) })
+            Some(quote! { .map(std::result::Result::<_, ()>::Ok) })
         } else {
             None
         };
+
         // If return 'Ok' type is not null, we wrap it in AxJson
         let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
-            quote! { .map(|res| res.map(AxJson)) }
+            quote! { .map(AxJson) }
         });
 
         let code = quote! {
@@ -371,17 +376,31 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #(#query_names: AxQuery<#query_tys>,)*
                 #body_arg
-            ) -> impl Future1<Item = #rtnty, Error = #return_err_ty> {
-                data.#opid(
-                    #(#path_names.into_inner(),)*
-                    #(#query_names.into_inner(),)*
-                    #body_into
-                )
-                    // we have to turn the output into a result type
+                // TODO this future is gross but unfortunately Future1 demands there be an Error type,
+                // but we do not want to use it because that uses Actix's error pathway
+            ) -> impl Future1<Item = (#rtnty, StatusCode), Error = ()> {
+                // call our API handler function with requisite arguments, returning a Future3
+                // We have to use `async move` here to pin the `Data` to the future
+                async move {
+                    let out = data.#opid(
+                        // TODO we should destructure everything through pattern-matching the signature
+                        #(#path_names.into_inner(),)*
+                        #(#query_names.into_inner(),)*
+                        #body_into
+                    )
+                    // turn the output into a result type, if not already
                     #maybe_wrap_into_result
+                    .await;
+                    out
+                    // wrap returnval in AxJson, if necessary
                     #maybe_wrap_rtnval
-                    .boxed()
-                    .compat()
+                    // give outcome a status code
+                    .map(|ok| (ok, StatusCode::OK))
+                    .map_err(|_| ())
+                }
+                // turn it into a Future1
+                .boxed()
+                .compat()
             }
         };
         code
@@ -691,7 +710,7 @@ fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let toks = quote! {
         #derives
         pub struct #name {
-            #(#field: #fieldtype),*
+            #(pub #field: #fieldtype),*
         }
         #impl_response
     };
@@ -705,6 +724,8 @@ fn get_derive_tokens() -> TokenStream {
 }
 
 // TODO I reckon this should be in `hsr_runtime` as a macro
+// TODO I don't think we actually want to use this, better to just
+// wrap in AxJson
 fn impl_responder(name: &QIdent) -> TokenStream {
     quote! {
         impl Responder for #name {
@@ -806,13 +827,15 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
 
     let server = quote! {
         pub fn serve<A: Api>() -> std::io::Result<()> {
+            let host = "127.0.0.1:8000";
+            println!("Serving on host {}", host);
             let api = AxData::new(A::new());
             HttpServer::new(move || {
                 App::new()
                     .register_data(api.clone())
                     #(.service(#resources))*
             })
-                .bind("127.0.0.1:8000")?
+                .bind(host)?
                 .run()
         }
     };
@@ -844,9 +867,12 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let code = quote! {
 
         // TODO is there a way to re-export the serde derive macros?
-        use hsr_runtime::Void;
-        use hsr_runtime::actix_web::{App, HttpServer, HttpRequest, Responder};
-        use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+        use hsr_runtime::{Void, result_to_either};
+        use hsr_runtime::actix_web::{
+            App, HttpServer, HttpRequest, Responder,
+            web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
+            http::StatusCode,
+        };
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
 
