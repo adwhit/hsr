@@ -20,6 +20,7 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
+// TODO use OrdMap to preserver ordering
 type Map<T> = std::collections::BTreeMap<String, T>;
 type IdMap = std::collections::BTreeMap<Ident, Type>;
 type TypeMap<T> = std::collections::BTreeMap<TypeName, T>;
@@ -355,9 +356,15 @@ impl Route {
         let path_names = &path_names;
 
         let query_keys = &self.query_args.keys().collect::<Vec<_>>();
-        let query_pattern = self.generate_query_type_name().map(|name| {
+        let query_name = self.generate_query_type_name();
+        let query_destructure = query_name.as_ref().map(|name| {
             quote! {
-                AxQuery(#name { #(#query_keys),* }): AxQuery<#name>
+                let #name { #(#query_keys),* } = query.into_inner();
+            }
+        });
+        let query_arg = query_name.map(|name| {
+            quote! {
+                query: AxQuery<#name>
             }
         });
 
@@ -401,12 +408,13 @@ impl Route {
             fn #opid<A: Api>(
                 data: AxData<A>,
                 #(#path_names: AxPath<#path_tys>,)*
-                #query_pattern
+                #query_arg
                 #body_arg
             ) -> impl Future1<Item = (#return_ty, StatusCode), Error = ()> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
+                    #query_destructure
                     let out = data.#opid(
                         // TODO we should destructure everything through pattern-matching the signature
                         #(#path_names.into_inner(),)*
@@ -902,7 +910,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
 
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::actix_web::{
-            App, HttpServer, HttpRequest, Responder,
+            App, HttpServer,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             http::StatusCode,
         };
