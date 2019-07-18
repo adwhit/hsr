@@ -339,6 +339,39 @@ impl Route {
         }
     }
 
+    /// If there are multitple difference error types, construct an
+    /// enum to hold them all. If there is only one or none, don't bother.
+    fn generate_error_enum_def(&self) -> Option<TokenStream> {
+        match (&self.err_tys[..], &self.default_err_ty) {
+            (&[], None) => None,         // Nothing to do
+            (&[], Some(_)) => None,      // We will use the lone default type
+            (&[ref _one], None) => None, // We will use the lone error type
+            (multiple, mb_default) => {
+                let name = ident(self.return_err_ty().unwrap());
+                let mut variants: Vec<_> = multiple
+                    .iter()
+                    .map(|(code, mb_ty)| {
+                        let statuscode = ident(format!("E{}", code.as_str()));
+                        match mb_ty.as_ref().map(|ty| ty.to_token()) {
+                            Some(ty) => quote! { #statuscode(#ty) },
+                            None => quote! { #statuscode },
+                        }
+                    })
+                    .collect();
+                if let Some(ty) = mb_default.as_ref().map(|ty| ty.to_token()) {
+                    variants.push(quote! { Default(#ty) })
+                }
+                let derives = get_derive_tokens();
+                Some(quote! {
+                    #derives
+                    pub enum #name {
+                        #(#variants,)*
+                    }
+                })
+            }
+        }
+    }
+
     /// Generate the dispatcher function. This function wraps the
     /// interface function in a shim that translates the signature into a form
     /// that Actix expects.
@@ -640,40 +673,11 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     for (_path, routes) in routemap {
         for route in routes {
             // Construct the error type, if necessary
-            // TODO break this into its own function
-            match (&route.err_tys[..], &route.default_err_ty) {
-                (&[], None) => {}         // Nothing to do
-                (&[], Some(_)) => {}      // We will use the lone default type
-                (&[ref _one], None) => {} // We will use the lone error type
-                (multiple, mb_default) => {
-                    let name = ident(route.return_err_ty().unwrap());
-                    let mut variants: Vec<_> = multiple
-                        .iter()
-                        .map(|(code, mb_ty)| {
-                            let statuscode = ident(format!("E{}", code.as_str()));
-                            match mb_ty.as_ref().map(|ty| ty.to_token()) {
-                                Some(ty) => quote! { #statuscode(#ty) },
-                                None => quote! { #statuscode },
-                            }
-                        })
-                        .collect();
-                    if let Some(ty) = mb_default.as_ref().map(|ty| ty.to_token()) {
-                        variants.push(quote! { Default(#ty) })
-                    }
-                    let derives = get_derive_tokens();
-                    let def = quote! {
-                        #derives
-                        pub enum #name {
-                            #(#variants,)*
-                        }
-                    };
-                    tokens.extend(def);
-                }
-            }
-            // construct the query type
-            if let Some(queryty) = route.generate_query_type() {
-                tokens.extend(queryty)
-            }
+            let mb_enum_def = route.generate_error_enum_def();
+            tokens.extend(mb_enum_def);
+            // construct the query type, if necessary
+            let mb_query_ty = route.generate_query_type();
+            tokens.extend(mb_query_ty)
         }
     }
     tokens
