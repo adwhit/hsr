@@ -6,6 +6,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use actix_http::http::StatusCode;
 use derive_deref::Deref;
 use derive_more::{Display, From};
 use either::Either;
@@ -148,8 +149,8 @@ struct Route {
     path_args: Vec<(Ident, Type)>,
     query_args: IdMap,
     segments: Vec<PathSegment>,
-    return_ty: (u16, Option<Type>),
-    err_tys: Vec<(u16, Option<Type>)>,
+    return_ty: (StatusCode, Option<Type>),
+    err_tys: Vec<(StatusCode, Option<Type>)>,
     default_err_ty: Option<Type>,
 }
 
@@ -213,36 +214,35 @@ impl Route {
 
         // Check responses are valid status codes
         // We only support 2XX (success) and 4XX (error) codes
-        let mut success = None;
-        let mut errors = vec![];
+        let mut success_code = None;
+        let mut error_codes = vec![];
         for code in responses.responses.keys() {
-            let v = code
-                .parse::<u16>()
+            let status = StatusCode::from_bytes(code.as_bytes())
                 .map_err(|_| Error::Todo(format!("Invalid status code: {}", code)))?;
-            if 200 <= v && v <= 300 {
-                if success.replace(v).is_some() {
+            if status.is_success() {
+                if success_code.replace(status).is_some() {
                     return Err(Error::Todo("Expeced exactly one 'success' status".into()));
                 }
-            } else if 400 <= v && v <= 500 {
-                errors.push(v)
+            } else if status.is_client_error() {
+                error_codes.push(status)
             } else {
                 return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()));
             }
         }
 
-        let return_ty = success
+        let return_ty = success_code
             .ok_or_else(|| Error::Todo("Expeced exactly one 'success' status".into()))
-            .and_then(|v| {
-                let ref_or_resp = &responses.responses[&v.to_string()];
-                get_type_from_response(&ref_or_resp, api).map(|ty| (v, ty))
+            .and_then(|status| {
+                let ref_or_resp = &responses.responses[status.as_str()];
+                get_type_from_response(&ref_or_resp, api).map(|ty| (status, ty))
             })?;
-        let err_tys = errors
+        let err_tys = error_codes
             .iter()
             .map(|&e| {
-                let ref_or_resp = &responses.responses[&e.to_string()];
+                let ref_or_resp = &responses.responses[e.as_str()];
                 get_type_from_response(&ref_or_resp, api).map(|ty| (e, ty))
             })
-            .collect::<Result<Vec<(u16, Option<Type>)>>>()?;
+            .collect::<Result<Vec<_>>>()?;
         let default_err_ty = responses
             .default
             .as_ref()

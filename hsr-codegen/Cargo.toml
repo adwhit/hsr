@@ -5,10 +5,12 @@ authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+actix-http = "0.2.7"
 derive_more = "0.15.0"
 failure = "0.1.5"
 heck = "0.3.1"
 http = "0.1.17"
+indexmap = "1.0.2"
 openapiv3 = "0.2.0"
 proc-macro2 = "0.4.30"
 quote = "0.6.13"
@@ -20,7 +22,6 @@ structopt = "0.2.18"
 syn = "0.15.39"
 derive_deref = "1.1.0"
 either = "1.5.2"
-indexmap = "1.0.2"
 
 [dev-dependencies]
 diff = "0.1.11"
