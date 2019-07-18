@@ -1,8 +1,8 @@
 #![feature(async_await)]
 
 use hsr_runtime::futures3::future::{BoxFuture, FutureExt};
-use std::sync::Mutex;
 use regex::Regex;
+use std::sync::Mutex;
 
 pub mod my_api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
@@ -36,7 +36,11 @@ impl my_api::Api for Api {
                 Regex::new(".?").unwrap()
             };
             let pets = self.pets.lock().unwrap();
-            pets.iter().take(limit as usize).filter(|p| regex.is_match(&p.name)).cloned().collect()
+            pets.iter()
+                .take(limit as usize)
+                .filter(|p| regex.is_match(&p.name))
+                .cloned()
+                .collect()
         }
             .boxed()
     }

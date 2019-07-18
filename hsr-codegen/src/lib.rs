@@ -262,6 +262,9 @@ impl Route {
         ident(&self.operation_id)
     }
 
+    /// Fetch the name of the return type identified as an error, if it exists.
+    /// If there are multiple error return types, this will give the name of an enum
+    /// which can hold any of them
     fn return_err_ty(&self) -> Option<TokenStream> {
         match (&self.err_tys[..], &self.default_err_ty) {
             (&[], None) => None,
@@ -274,6 +277,8 @@ impl Route {
         }
     }
 
+    /// The name of the return type. If none are found, returns '()'.
+    /// If both Success and Error types exist, will be a Result type
     fn return_ty(&self) -> TokenStream {
         let ok = match &self.return_ty.1 {
             Some(ty) => ty.to_token(),
@@ -285,9 +290,10 @@ impl Route {
         }
     }
 
-    fn generate_interface(&self) -> TokenStream {
+    /// Generate the function signature compatible with the Route
+    fn generate_signature(&self) -> TokenStream {
         let opid = self.op_id();
-        let rtn_ty = self.return_ty();
+        let return_ty = self.return_ty();
         let paths: Vec<_> = self
             .path_args
             .iter()
@@ -311,10 +317,18 @@ impl Route {
             }
         };
         quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#rtn_ty>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty>;
         }
     }
 
+    /// Generate the dispatcher function. This function wraps the
+    /// interface function in a shim that translates the signature into a form
+    /// that Actix expects.
+    ///
+    /// Specifically, we generate a function that accepts Path, Query and Json types,
+    /// extracts the values from these types, calls the API function with the values,
+    /// and wraps the resulting Future3 type to return a Future1 with corresponding Ok
+    /// and Error types.
     fn generate_dispatcher(&self) -> TokenStream {
         // TODO lots of duplication with interface function
         let opid = ident(&self.operation_id);
@@ -346,7 +360,7 @@ impl Route {
                 (quote! {#name.into_inner()}, quote! { #name: AxJson<#ty>, })
             }
         };
-        let rtnty = &self
+        let return_ty = &self
             .return_ty
             .1
             .as_ref()
@@ -356,7 +370,7 @@ impl Route {
             })
             .unwrap_or(quote! { () });
 
-        let return_err_ty = self.return_err_ty().unwrap_or(quote! { Void });
+        let return_err_ty = self.return_err_ty().unwrap_or(quote! { () });
 
         // If return type is not a Result, make it into one
         let maybe_wrap_into_result = if self.return_err_ty().is_none() {
@@ -366,7 +380,7 @@ impl Route {
         };
 
         // If return 'Ok' type is not null, we wrap it in AxJson
-        let maybe_wrap_rtnval = self.return_ty.1.as_ref().map(|_| {
+        let maybe_wrap_return_val = self.return_ty.1.as_ref().map(|_| {
             quote! { .map(AxJson) }
         });
 
@@ -376,7 +390,7 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #(#query_names: AxQuery<#query_tys>,)*
                 #body_arg
-            ) -> impl Future1<Item = (#rtnty, StatusCode), Error = ()> {
+            ) -> impl Future1<Item = (#return_ty, StatusCode), Error = ()> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
@@ -391,8 +405,8 @@ impl Route {
                     .await;
                     out
                     // wrap returnval in AxJson, if necessary
-                    #maybe_wrap_rtnval
-                    // give outcome a status code
+                    #maybe_wrap_return_val
+                    // give outcome a status code (simple way of overriding the Responder return type)
                     .map(|ok| (ok, StatusCode::OK))
                     .map_err(|_| ())
                 }
@@ -405,6 +419,7 @@ impl Route {
     }
 }
 
+/// Build hsr Type from OpenAPI Response
 fn get_type_from_response(
     ref_or_resp: &ReferenceOr<openapiv3::Response>,
     api: &OpenAPI,
@@ -435,6 +450,8 @@ fn get_type_from_response(
 }
 
 /// A string which is a valid identifier (snake_case)
+///
+/// Do not construct directly, instead use `new`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct Ident(String);
 
@@ -454,6 +471,8 @@ impl Ident {
 }
 
 /// A string which is a valid name for type (CamelCase)
+///
+/// Do not construct directly, instead use `new`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct TypeName(String);
 
@@ -473,6 +492,7 @@ enum PathSegment {
     Parameter(String),
 }
 
+/// Check a path is well-formed and break it into its respective `PathSegment`s
 fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     // TODO lazy static
     let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
@@ -555,6 +575,8 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
+/// Generate code that defines a `struct` or `type` alias for each object described
+/// in the OpenAPI 'components' section.
 fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
@@ -618,7 +640,7 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
     let mut methods = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            methods.extend(route.generate_interface());
+            methods.extend(route.generate_signature());
         }
     }
     quote! {
