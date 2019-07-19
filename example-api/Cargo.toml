@@ -9,6 +9,6 @@ hsr-codegen = { path = "../hsr-codegen" }
 
 [dependencies]
 hsr-runtime = { path = "../hsr-runtime" }
-serde = { version = "1", features = ['derive'] }
+serde = { version = "1.0.97", features = ['derive'] }
 regex = "1.1.9"
 rand = "0.7.0"

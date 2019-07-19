@@ -397,7 +397,9 @@ impl Route {
                 type Future = Result<HttpResponse, Void>;
 
                 fn respond_to(self, _: &HttpRequest) -> Self::Future {
-                    unimplemented!()
+                    let status = self.status_code();
+                    // TODO should also serialize object if possible/necessary
+                    Ok(HttpResponse::build(status).finish())
                 }
             }
         }

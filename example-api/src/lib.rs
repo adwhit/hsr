@@ -42,7 +42,7 @@ impl Api {
     }
 
     fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
-        if rand::random::<f32>() > 0.6 {
+        if rand::random::<f32>() > 0.8 {
             Err(InternalError::BadConnection)
         } else {
             Ok(self.database.lock().unwrap().get(id).cloned())
@@ -50,7 +50,7 @@ impl Api {
     }
 
     fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
-        if rand::random::<f32>() > 0.6 {
+        if rand::random::<f32>() > 0.8 {
             Err(InternalError::BadConnection)
         } else {
             let mut pets = self.database.lock().unwrap();
