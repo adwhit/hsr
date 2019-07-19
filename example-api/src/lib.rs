@@ -10,6 +10,12 @@ pub mod my_api {
 
 use my_api::*;
 
+impl Pet {
+    fn new(id: i64, name: String, tag: Option<String>) -> Pet {
+        Pet { id, name, tag }
+    }
+}
+
 pub struct Api {
     database: Mutex<Vec<Pet>>,
 }
@@ -31,6 +37,14 @@ enum InternalError {
 }
 
 impl Api {
+    fn all_pets(&self) -> Result<Vec<Pet>, InternalError> {
+        if rand::random::<f32>() > 0.6 {
+            Err(InternalError::BadConnection)
+        } else {
+            Ok(self.database.lock().unwrap().clone())
+        }
+    }
+
     fn lookup_pet(&self, id: usize) -> Result<Option<Pet>, InternalError> {
         if rand::random::<f32>() > 0.6 {
             Err(InternalError::BadConnection)
@@ -60,13 +74,9 @@ impl Api {
     }
 }
 
-impl Pet {
-    fn new(id: i64, name: String, tag: Option<String>) -> Pet {
-        Pet { id, name, tag }
-    }
-}
-
 impl my_api::Api for Api {
+    type Error = InternalError;
+
     fn new() -> Self {
         Api {
             database: Mutex::new(vec![]),
@@ -74,18 +84,17 @@ impl my_api::Api for Api {
     }
 
     // TODO all these i64s should be u64s
-    fn get_all_pets(&self, filter: Option<String>, limit: i64) -> BoxFuture<Pets> {
+    fn get_all_pets(&self, filter: Option<String>, limit: i64) -> BoxFuture<Result<Pets, GetAllPetsError>> {
         async move {
             let regex = if let Some(filter) = filter {
-                Regex::new(&filter).unwrap()
+                Regex::new(&filter)?
             } else {
                 Regex::new(".?").unwrap()
             };
-            let pets = self.database.lock().unwrap();
-            pets.iter()
+            let pets = self.all_pets()?;
+            pets.into_iter()
                 .take(limit as usize)
                 .filter(|p| regex.is_match(&p.name))
-                .cloned()
                 .collect()
         }
             .boxed()
