@@ -31,8 +31,12 @@ impl Responder for Void {
 
 impl actix_web::ResponseError for Void {}
 
+/// Associate an http status code with a type. Defaults to 501 Internal Server Error
 pub trait HasStatusCode {
-    fn get_status_code(&self) -> actix_web::http::StatusCode;
+    /// The http status code associated with the type
+    fn status_code(&self) -> actix_web::http::StatusCode {
+        actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
@@ -41,3 +45,5 @@ pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
         Err(b) => Either::B(b),
     }
 }
+
+pub trait Error: HasStatusCode {}

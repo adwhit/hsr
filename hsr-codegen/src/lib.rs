@@ -282,17 +282,8 @@ impl Route {
     /// Fetch the name of the return type identified as an error, if it exists.
     /// If there are multiple error return types, this will give the name of an enum
     /// which can hold any of them
-    fn return_err_ty(&self) -> Option<TokenStream> {
-        match (&self.err_tys[..], &self.default_err_ty) {
-            (&[], None) => None,
-            (&[], Some(default_ty)) => Some(default_ty.to_token()),
-            (&[(_, Some(ref err_ty))], None) => Some(err_ty.to_token()),
-            _many => {
-                let manyid =
-                    TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap();
-                Some(quote! { #manyid })
-            }
-        }
+    fn return_err_ty(&self) -> TypeName {
+        TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap()
     }
 
     /// The name of the return type. If none are found, returns '()'.
@@ -302,10 +293,8 @@ impl Route {
             Some(ty) => ty.to_token(),
             None => quote! { () },
         };
-        match self.return_err_ty() {
-            Some(err) => quote! { std::result::Result<#ok, #err> },
-            None => ok,
-        }
+        let err = self.return_err_ty();
+        quote! { std::result::Result<#ok, #err<Self::Error>> }
     }
 
     /// Generate the function signature compatible with the Route
@@ -341,61 +330,69 @@ impl Route {
 
     /// If there are multitple difference error types, construct an
     /// enum to hold them all. If there is only one or none, don't bother.
-    fn generate_error_enum_def(&self) -> Option<TokenStream> {
-        match (&self.err_tys[..], &self.default_err_ty) {
-            (&[], None) => None,         // Nothing to do
-            (&[], Some(_)) => None,      // We will use the lone default type
-            (&[ref _one], None) => None, // We will use the lone error type
-            _other => {
-                let name = ident(self.return_err_ty().unwrap());
-                let mut variants = vec![];
-                let mut variant_matches = vec![];
-                let mut status_codes = vec![];
-                for (code, mb_ty) in &self.err_tys {
-                    status_codes.push(code.as_u16());
-                    let variant_name = ident(format!("E{}", code.as_str()));
-                    match mb_ty.as_ref().map(|ty| ty.to_token()) {
-                        Some(ty) => {
-                            variants.push(quote! { #variant_name(#ty) });
-                            variant_matches.push(quote! { #variant_name(_) });
-                        }
-                        None => {
-                            variants.push(quote! { #variant_name });
-                            variant_matches.push(quote! { #variant_name });
-                        }
+    fn generate_error_enum_def(&self) -> TokenStream {
+        let name = self.return_err_ty();
+        let mut variants = vec![];
+        let mut variant_matches = vec![];
+        let mut status_codes = vec![];
+        for (code, mb_ty) in &self.err_tys {
+            status_codes.push(code.as_u16());
+            let variant_name = ident(format!("E{}", code.as_str()));
+            match mb_ty.as_ref().map(|ty| ty.to_token()) {
+                Some(ty) => {
+                    variants.push(quote! { #variant_name(#ty) });
+                    variant_matches.push(quote! { #variant_name(_) });
+                }
+                None => {
+                    variants.push(quote! { #variant_name });
+                    variant_matches.push(quote! { #variant_name });
+                }
+            }
+        }
+        // maybe add a default variant
+        let (mb_default_variant, mb_default_status) = match self.default_err_ty {
+            Some(ref ty) => {
+                let ty = ty.to_token();
+                (
+                    Some(quote! { Default(#ty), }),
+                    Some(quote! { Default(e) => e.status_code(), }),
+                )
+            }
+            None => (None, None),
+        };
+        let derives = get_derive_tokens();
+        quote! {
+            #derives
+            pub enum #name<E: HsrError> {
+                #(#variants,)*
+                #mb_default_variant
+                Internal(E)
+            }
+
+            impl<E: HsrError> From<E> for #name<E> {
+                fn from(e: E) -> Self {
+                    Self::Internal(e)
+                }
+            }
+
+            impl<E: HsrError> HasStatusCode for #name<E> {
+                fn status_code(&self) -> StatusCode {
+                    use #name::*;
+                    match self {
+                        #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
+                        #mb_default_status
+                        Internal(e) => e.status_code()
                     }
                 }
-                // maybe add a default variant
-                if let Some(ty) = self.default_err_ty.as_ref().map(|ty| ty.to_token()) {
-                    variants.push(quote! { Default(#ty) });
-                    variant_matches.push(quote! { Default(_) });
+            }
+
+            impl<E: HsrError> Responder for #name<E> {
+                type Error = Void;
+                type Future = Result<HttpResponse, Void>;
+
+                fn respond_to(self, _: &HttpRequest) -> Self::Future {
+                    todo!()
                 }
-                let derives = get_derive_tokens();
-                let code = quote! {
-                    #derives
-                    pub enum #name {
-                        #(#variants,)*
-                    }
-
-                    impl hsr_runtime::HasStatusCode for #name {
-                        fn get_status_code(&self) -> StatusCode {
-                            use #name::*;
-                            match self {
-                                #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
-                            }
-                        }
-                    }
-
-                    impl Responder for #name {
-                        type Error = Void;
-                        type Future = Result<HttpResponse, Void>;
-
-                        fn respond_to(self, _: &HttpRequest) -> Self::Future {
-                            unimplemented!()
-                        }
-                    }
-                };
-                Some(code)
             }
         }
     }
@@ -451,14 +448,7 @@ impl Route {
                 quote! { AxJson<#ty> }
             })
             .unwrap_or(quote! { () });
-        let return_err_ty = self.return_err_ty().unwrap_or(quote! { () });
-
-        // If return type is not a Result, make it into one
-        let maybe_wrap_into_result = if self.return_err_ty().is_none() {
-            Some(quote! { .map(std::result::Result::<_, ()>::Ok) })
-        } else {
-            None
-        };
+        let return_err_ty = self.return_err_ty();
 
         // If return 'Ok' type is not null, we wrap it in AxJson
         let maybe_wrap_return_val = self.return_ty.1.as_ref().map(|_| {
@@ -473,7 +463,7 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future1<Item = Either<(#return_ty, StatusCode), #return_err_ty>, Error = Void> {
+            ) -> impl Future1<Item = Either<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Error = Void> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
@@ -484,8 +474,6 @@ impl Route {
                         #(#query_keys,)*
                         #body_into
                     )
-                    // turn the output into a result type, if not already
-                    #maybe_wrap_into_result
                     .await;
                     let out = out
                     // wrap returnval in AxJson, if necessary
@@ -717,7 +705,7 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
     }
     quote! {
         pub trait Api: Send + Sync + 'static {
-            type Error;
+            type Error: HsrError;
             fn new() -> Self;
 
             #methods
@@ -950,7 +938,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let code = quote! {
 
         // TODO is there a way to re-export the serde derive macros?
-        use hsr_runtime::Void;
+        use hsr_runtime::{Void, Error as HsrError, HasStatusCode};
         use hsr_runtime::actix_web::{
             App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},

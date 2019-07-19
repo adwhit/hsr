@@ -20,24 +20,20 @@ pub struct Api {
     database: Mutex<Vec<Pet>>,
 }
 
-// There is a need to distinguish between external and internal errors
-// External errors usually come from bad authorization, malformed data or resource not found
-// These are exposed to the user as 4XX errors and are part of our API - they are NOT
-// 'Errors' as such, or at least, they do not indicate a problem with our server.
-// Moreover, the server will handle a lot of these automatically, e.g. if route is not
-// found it will automatically return 404.
-
-// On the other hamd, plenty of things can go wrong internally too, e.g. database connection failed,
-// connection timeout, parse failures and so on. Usually it is nicest to handle these with the `?` operator
-
-enum InternalError {
+pub enum InternalError {
     BadConnection,
     ParseFailure,
-    ServerHasExploded
+    ServerHasExploded,
 }
 
+impl hsr_runtime::HasStatusCode for InternalError {}
+impl hsr_runtime::HasStatusCode for Error {}
+impl hsr_runtime::Error for InternalError {}
+
+type ApiResult<T> = std::result::Result<T, InternalError>;
+
 impl Api {
-    fn all_pets(&self) -> Result<Vec<Pet>, InternalError> {
+    fn all_pets(&self) -> ApiResult<Vec<Pet>> {
         if rand::random::<f32>() > 0.6 {
             Err(InternalError::BadConnection)
         } else {
@@ -45,7 +41,7 @@ impl Api {
         }
     }
 
-    fn lookup_pet(&self, id: usize) -> Result<Option<Pet>, InternalError> {
+    fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
         if rand::random::<f32>() > 0.6 {
             Err(InternalError::BadConnection)
         } else {
@@ -53,19 +49,19 @@ impl Api {
         }
     }
 
-    fn add_pet(&self, new_pet: NewPet) -> Result<usize, InternalError> {
+    fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
         if rand::random::<f32>() > 0.6 {
             Err(InternalError::BadConnection)
         } else {
             let mut pets = self.database.lock().unwrap();
             let id = pets.len();
-            let new = Pet::new(id, new_pet.name, new_pet.tag);
+            let new = Pet::new(id as i64, new_pet.name, new_pet.tag);
             pets.push(new);
             Ok(id)
         }
     }
 
-    fn server_health_check(&self) -> Result<(), InternalError> {
+    fn server_health_check(&self) -> ApiResult<()> {
         if rand::random::<f32>() > 0.99 {
             Err(InternalError::ServerHasExploded)
         } else {
@@ -84,39 +80,42 @@ impl my_api::Api for Api {
     }
 
     // TODO all these i64s should be u64s
-    fn get_all_pets(&self, filter: Option<String>, limit: i64) -> BoxFuture<Result<Pets, GetAllPetsError>> {
+    fn get_all_pets(
+        &self,
+        filter: Option<String>,
+        limit: i64,
+    ) -> BoxFuture<Result<Pets, GetAllPetsError<Self::Error>>> {
         async move {
             let regex = if let Some(filter) = filter {
-                Regex::new(&filter)?
+                Regex::new(&filter).unwrap()
+            // TODO Regex::new(&filter).map_err(|_| GetAllPetsError::BadData)?
             } else {
                 Regex::new(".?").unwrap()
             };
             let pets = self.all_pets()?;
-            pets.into_iter()
+            Ok(pets
+                .into_iter()
                 .take(limit as usize)
                 .filter(|p| regex.is_match(&p.name))
-                .collect()
+                .collect())
         }
             .boxed()
     }
 
-    fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<(), CreatePetError>> {
+    fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<(), CreatePetError<Self::Error>>> {
         async move {
             let () = self.server_health_check()?;
-            let mut pets = self.database.lock().unwrap();
-            let new = Pet::new(pets.len() as i64, new_pet.name, new_pet.tag);
-            pets.push(new);
-            Ok(())
+            Ok(self.add_pet(new_pet).map(|_| ())?) // TODO return usize
         }
             .boxed()
     }
 
-    fn get_pet(&self, pet_id: i64) -> BoxFuture<std::result::Result<Pet, GetPetError>> {
+    fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet, GetPetError<Self::Error>>> {
         // TODO This is how we would like it to work
         async move {
-            self.lookup_pet(pet_id as usize)?
-                .ok_or_else(|| GetPetError::NotFound)
+            Ok(self.lookup_pet(pet_id as usize)?.unwrap())
+            // TODO .ok_or_else(|| GetPetError::NotFound)
         }
-        .boxed()
+            .boxed()
     }
 }
