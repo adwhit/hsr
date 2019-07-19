@@ -11,3 +11,4 @@ hsr-codegen = { path = "../hsr-codegen" }
 hsr-runtime = { path = "../hsr-runtime" }
 serde = { version = "1", features = ['derive'] }
 regex = "1.1.9"
+rand = "0.7.0"

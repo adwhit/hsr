@@ -409,7 +409,8 @@ impl Route {
     /// and wraps the resulting Future3 type to return a Future1 with corresponding Ok
     /// and Error types.
     fn generate_dispatcher(&self) -> TokenStream {
-        // TODO lots of duplication with interface function
+        // XXX this function is a total mess, there must be a better way to do it.
+        // After all, it seems we have got the API signatures right/OK?
         let opid = &self.operation_id;
 
         let (path_names, path_tys): (Vec<_>, Vec<_>) = self
@@ -440,6 +441,7 @@ impl Route {
             }
         };
         let body_into = body_arg.as_ref().map(|_| ident("body"));
+
         let return_ty = &self
             .return_ty
             .1
@@ -449,7 +451,6 @@ impl Route {
                 quote! { AxJson<#ty> }
             })
             .unwrap_or(quote! { () });
-
         let return_err_ty = self.return_err_ty().unwrap_or(quote! { () });
 
         // If return type is not a Result, make it into one
@@ -464,7 +465,7 @@ impl Route {
             quote! { .map(AxJson) }
         });
 
-        let status_code = self.return_ty.0.as_u16();
+        let ok_status_code = self.return_ty.0.as_u16();
 
         let code = quote! {
             fn #opid<A: Api>(
@@ -472,7 +473,7 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future1<Item = (#return_ty, StatusCode), Error = #return_err_ty> {
+            ) -> impl Future1<Item = Either<(#return_ty, StatusCode), #return_err_ty>, Error = Void> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
@@ -486,11 +487,12 @@ impl Route {
                     // turn the output into a result type, if not already
                     #maybe_wrap_into_result
                     .await;
-                    out
+                    let out = out
                     // wrap returnval in AxJson, if necessary
                     #maybe_wrap_return_val
                     // give outcome a status code (simple way of overriding the Responder return type)
-                    .map(|return_val| (return_val, StatusCode::from_u16(#status_code).unwrap()))
+                    .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
+                     Result::<_, Void>::Ok(hsr_runtime::result_to_either(out))
                 }
                 // turn it into a Future1
                 .boxed()
@@ -715,6 +717,7 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
     }
     quote! {
         pub trait Api: Send + Sync + 'static {
+            type Error;
             fn new() -> Self;
 
             #methods
@@ -949,7 +952,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::Void;
         use hsr_runtime::actix_web::{
-            App, HttpServer, HttpRequest, HttpResponse, Responder,
+            App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             http::StatusCode,
         };

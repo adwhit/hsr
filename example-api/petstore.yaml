@@ -83,11 +83,13 @@ paths:
             type: integer
       responses:
         '200':
-          description: Expected response to a valid request
+          description: Pet retrieved
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pet"
+        '404':
+          description: Pet not found
         default:
           description: unexpected error
           content:
