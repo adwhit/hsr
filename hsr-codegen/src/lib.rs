@@ -125,6 +125,10 @@ fn gather_types(api: &OpenAPI) -> Result<TypeMap<Either<Struct, Type>>> {
     Ok(typs)
 }
 
+fn api_trait_name(api: &OpenAPI) -> TypeName {
+    TypeName::new(format!("{}Api", api.info.title.to_camel_case())).unwrap()
+}
+
 #[derive(Debug, Clone)]
 enum Method {
     Get,
@@ -391,7 +395,7 @@ impl Route {
                 type Future = Result<HttpResponse, Void>;
 
                 fn respond_to(self, _: &HttpRequest) -> Self::Future {
-                    todo!()
+                    unimplemented!()
                 }
             }
         }
@@ -405,7 +409,7 @@ impl Route {
     /// extracts the values from these types, calls the API function with the values,
     /// and wraps the resulting Future3 type to return a Future1 with corresponding Ok
     /// and Error types.
-    fn generate_dispatcher(&self) -> TokenStream {
+    fn generate_dispatcher(&self, trait_name: &TypeName) -> TokenStream {
         // XXX this function is a total mess, there must be a better way to do it.
         // After all, it seems we have got the API signatures right/OK?
         let opid = &self.operation_id;
@@ -458,7 +462,7 @@ impl Route {
         let ok_status_code = self.return_ty.0.as_u16();
 
         let code = quote! {
-            fn #opid<A: Api>(
+            fn #opid<A: #trait_name>(
                 data: AxData<A>,
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
@@ -696,7 +700,7 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     tokens
 }
 
-fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
+fn generate_rust_interface(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let mut methods = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -704,7 +708,7 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
         }
     }
     quote! {
-        pub trait Api: Send + Sync + 'static {
+        pub trait #trait_name: Send + Sync + 'static {
             type Error: HsrError;
             fn new() -> Self;
 
@@ -713,11 +717,11 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>) -> TokenStream {
     }
 }
 
-fn generate_rust_dispatchers(routes: &Map<Vec<Route>>) -> TokenStream {
+fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let mut dispatchers = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
-            dispatchers.extend(route.generate_dispatcher());
+            dispatchers.extend(route.generate_dispatcher(trait_name));
         }
     }
     quote! {#dispatchers}
@@ -875,7 +879,7 @@ fn discard_struct_def(ty: Either<Struct, Type>) -> Result<Type> {
     }
 }
 
-fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
+fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let resources: Vec<_> = routemap
         .iter()
         .map(|(path, routes)| {
@@ -891,8 +895,9 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>) -> TokenStream {
         .collect();
 
     let server = quote! {
-        pub fn serve<A: Api>() -> std::io::Result<()> {
-            let host = "127.0.0.1:8000";
+        /// Serve the API on a given host.
+        /// Once sucessfully initialize, the server Blocks indefinitely.
+        pub fn serve<A: #trait_name>(host: &str) -> std::io::Result<()> {
             println!("Serving on host {}", host);
             let api = AxData::new(A::new());
             HttpServer::new(move || {
@@ -921,6 +926,7 @@ pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
 
 pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let api: OpenAPI = serde_yaml::from_reader(yaml)?;
+    let trait_name = api_trait_name(&api);
     debug!("Gather types");
     let typs = gather_types(&api)?;
     debug!("Gather routes");
@@ -930,11 +936,11 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     debug!("Generate route types");
     let rust_route_types = generate_rust_route_types(&routes);
     debug!("Generate API trait");
-    let rust_trait = generate_rust_interface(&routes);
+    let rust_trait = generate_rust_interface(&routes, &trait_name);
     debug!("Generate dispatchers");
-    let rust_dispatchers = generate_rust_dispatchers(&routes);
+    let rust_dispatchers = generate_rust_dispatchers(&routes, &trait_name);
     debug!("Generate server");
-    let rust_server = generate_rust_server(&routes);
+    let rust_server = generate_rust_server(&routes, &trait_name);
     let code = quote! {
 
         // TODO is there a way to re-export the serde derive macros?

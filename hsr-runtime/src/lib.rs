@@ -3,7 +3,7 @@ pub use futures1;
 pub use futures3;
 pub use serde;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, Either};
+use actix_web::{Either, HttpRequest, HttpResponse, Responder};
 use std::fmt;
 
 pub enum Void {}

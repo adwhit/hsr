@@ -70,7 +70,7 @@ impl Api {
     }
 }
 
-impl my_api::Api for Api {
+impl my_api::PetstoreApi for Api {
     type Error = InternalError;
 
     fn new() -> Self {
