@@ -87,8 +87,7 @@ impl my_api::PetstoreApi for Api {
     ) -> BoxFuture<Result<Pets, GetAllPetsError<Self::Error>>> {
         async move {
             let regex = if let Some(filter) = filter {
-                Regex::new(&filter).unwrap()
-            // TODO Regex::new(&filter).map_err(|_| GetAllPetsError::BadData)?
+                Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
             } else {
                 Regex::new(".?").unwrap()
             };
@@ -113,8 +112,8 @@ impl my_api::PetstoreApi for Api {
     fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet, GetPetError<Self::Error>>> {
         // TODO This is how we would like it to work
         async move {
-            Ok(self.lookup_pet(pet_id as usize)?.unwrap())
-            // TODO .ok_or_else(|| GetPetError::NotFound)
+            self.lookup_pet(pet_id as usize)?
+             .ok_or_else(|| GetPetError::NotFound)
         }
             .boxed()
     }

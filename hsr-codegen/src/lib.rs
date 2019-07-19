@@ -341,7 +341,9 @@ impl Route {
         let mut status_codes = vec![];
         for (code, mb_ty) in &self.err_tys {
             status_codes.push(code.as_u16());
-            let variant_name = ident(format!("E{}", code.as_str()));
+            let variant_name = code.canonical_reason()
+                .map(|reason| ident(reason.to_camel_case()))
+                .unwrap_or(ident(format!("E{}", code.as_str())));
             match mb_ty.as_ref().map(|ty| ty.to_token()) {
                 Some(ty) => {
                     variants.push(quote! { #variant_name(#ty) });

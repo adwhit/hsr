@@ -39,6 +39,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pets"
+        '400':
+          description: Invalid filter regex
     post:
       summary: Create a pet
       operationId: createPet
