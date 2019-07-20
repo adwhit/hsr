@@ -1,8 +1,10 @@
 #![feature(async_await)]
 
-use hsr_runtime::futures3::future::{BoxFuture, FutureExt};
+use hsr_runtime::futures3::{
+    future::{BoxFuture, FutureExt},
+    lock,
+};
 use regex::Regex;
-use std::sync::Mutex;
 
 pub mod my_api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
@@ -17,7 +19,7 @@ impl Pet {
 }
 
 pub struct Api {
-    database: Mutex<Vec<Pet>>,
+    database: lock::Mutex<Vec<Pet>>,
 }
 
 pub enum InternalError {
@@ -27,38 +29,40 @@ pub enum InternalError {
 }
 
 impl hsr_runtime::HasStatusCode for InternalError {}
-impl hsr_runtime::HasStatusCode for Error {}
 impl hsr_runtime::Error for InternalError {}
+
+// TODO is it possible to remove the requirement for this impl?
+// Alternatively, add a trait bound for HasStatusCode to give a
+// nicer error?
+impl hsr_runtime::HasStatusCode for Error {}
 
 type ApiResult<T> = std::result::Result<T, InternalError>;
 
 impl Api {
-    fn all_pets(&self) -> ApiResult<Vec<Pet>> {
-        if rand::random::<f32>() > 0.6 {
-            Err(InternalError::BadConnection)
-        } else {
-            Ok(self.database.lock().unwrap().clone())
-        }
-    }
-
-    fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
+    async fn connect_db(&self) -> ApiResult<lock::MutexGuard<Vec<Pet>>> {
         if rand::random::<f32>() > 0.8 {
             Err(InternalError::BadConnection)
         } else {
-            Ok(self.database.lock().unwrap().get(id).cloned())
+            Ok(self.database.lock().await)
         }
     }
 
-    fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
-        if rand::random::<f32>() > 0.8 {
-            Err(InternalError::BadConnection)
-        } else {
-            let mut pets = self.database.lock().unwrap();
-            let id = pets.len();
-            let new = Pet::new(id as i64, new_pet.name, new_pet.tag);
-            pets.push(new);
-            Ok(id)
-        }
+    async fn all_pets(&self) -> ApiResult<Vec<Pet>> {
+        let db = self.connect_db().await?;
+        Ok(db.clone())
+    }
+
+    async fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
+        let db = self.connect_db().await?;
+        Ok(db.get(id).cloned())
+    }
+
+    async fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
+        let mut db = self.connect_db().await?;
+        let id = db.len();
+        let new_pet = Pet::new(id as i64, new_pet.name, new_pet.tag);
+        db.push(new_pet);
+        Ok(id)
     }
 
     fn server_health_check(&self) -> ApiResult<()> {
@@ -75,7 +79,7 @@ impl my_api::PetstoreApi for Api {
 
     fn new() -> Self {
         Api {
-            database: Mutex::new(vec![]),
+            database: lock::Mutex::new(vec![]),
         }
     }
 
@@ -91,7 +95,7 @@ impl my_api::PetstoreApi for Api {
             } else {
                 Regex::new(".?").unwrap()
             };
-            let pets = self.all_pets()?;
+            let pets = self.all_pets().await?;
             Ok(pets
                 .into_iter()
                 .take(limit as usize)
@@ -104,7 +108,8 @@ impl my_api::PetstoreApi for Api {
     fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<(), CreatePetError<Self::Error>>> {
         async move {
             let () = self.server_health_check()?;
-            Ok(self.add_pet(new_pet).map(|_| ())?) // TODO return usize
+            let _ = self.add_pet(new_pet).await?; // TODO return usize
+            Ok(())
         }
             .boxed()
     }
@@ -112,7 +117,8 @@ impl my_api::PetstoreApi for Api {
     fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet, GetPetError<Self::Error>>> {
         // TODO This is how we would like it to work
         async move {
-            self.lookup_pet(pet_id as usize)?
+            self.lookup_pet(pet_id as usize)
+                .await?
                 .ok_or_else(|| GetPetError::NotFound)
         }
             .boxed()

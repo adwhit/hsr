@@ -359,12 +359,10 @@ impl Route {
         }
         // maybe add a default variant
         let (mb_default_variant, mb_default_status) = match self.default_err_ty {
-            Some(ref ty) => {
-                (
-                    Some(quote! { Default(#ty), }),
-                    Some(quote! { Default(e) => e.status_code(), }),
-                )
-            }
+            Some(ref ty) => (
+                Some(quote! { Default(#ty), }),
+                Some(quote! { Default(e) => e.status_code(), }),
+            ),
             None => (None, None),
         };
         let derives = get_derive_tokens();
@@ -419,11 +417,7 @@ impl Route {
         // After all, it seems we have got the API signatures right/OK?
         let opid = &self.operation_id;
 
-        let (path_names, path_tys): (Vec<_>, Vec<_>) = self
-            .path_args
-            .iter()
-            .cloned()
-            .unzip();
+        let (path_names, path_tys): (Vec<_>, Vec<_>) = self.path_args.iter().cloned().unzip();
         let path_names = &path_names;
 
         let query_keys = &self.query_args.keys().collect::<Vec<_>>();
@@ -441,9 +435,7 @@ impl Route {
 
         let body_arg = match self.method {
             Method::Get | Method::Post(None) => None,
-            Method::Post(Some(ref body_ty)) => {
-                Some(quote! { AxJson(body): AxJson<#body_ty>, })
-            }
+            Method::Post(Some(ref body_ty)) => Some(quote! { AxJson(body): AxJson<#body_ty>, }),
         };
         let body_into = body_arg.as_ref().map(|_| ident("body"));
 
