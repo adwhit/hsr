@@ -296,7 +296,7 @@ impl Route {
     /// If both Success and Error types exist, will be a Result type
     fn return_ty(&self) -> TokenStream {
         let ok = match &self.return_ty.1 {
-            Some(ty) => ty.to_token(),
+            Some(ty) => quote! { #ty },
             None => quote! { () },
         };
         let err = self.return_err_ty();
@@ -310,23 +310,22 @@ impl Route {
         let paths: Vec<_> = self
             .path_args
             .iter()
-            .map(|(id, ty)| id_ty_pair(id, ty))
+            .map(|(id, ty)| quote! { #id: #ty })
             .collect();
         let queries: Vec<_> = self
             .query_args
             .iter()
-            .map(|(id, ty)| id_ty_pair(id, ty))
+            .map(|(id, ty)| quote! { #id: #ty })
             .collect();
         let body_arg = match self.method {
             Method::Get | Method::Post(None) => None,
-            Method::Post(Some(ref body)) => {
-                let name = if let Type::Named(typename) = body {
+            Method::Post(Some(ref body_ty)) => {
+                let name = if let Type::Named(typename) = body_ty {
                     ident(typename.to_string().to_snake_case())
                 } else {
                     ident("payload")
                 };
-                let ty = body.to_token();
-                Some(quote! { #name: #ty, })
+                Some(quote! { #name: #body_ty, })
             }
         };
         quote! {
@@ -347,7 +346,7 @@ impl Route {
                 .canonical_reason()
                 .map(|reason| ident(reason.to_camel_case()))
                 .unwrap_or(ident(format!("E{}", code.as_str())));
-            match mb_ty.as_ref().map(|ty| ty.to_token()) {
+            match mb_ty.as_ref() {
                 Some(ty) => {
                     variants.push(quote! { #variant_name(#ty) });
                     variant_matches.push(quote! { #variant_name(_) });
@@ -361,7 +360,6 @@ impl Route {
         // maybe add a default variant
         let (mb_default_variant, mb_default_status) = match self.default_err_ty {
             Some(ref ty) => {
-                let ty = ty.to_token();
                 (
                     Some(quote! { Default(#ty), }),
                     Some(quote! { Default(e) => e.status_code(), }),
@@ -424,7 +422,7 @@ impl Route {
         let (path_names, path_tys): (Vec<_>, Vec<_>) = self
             .path_args
             .iter()
-            .map(|(id, ty)| (ident(id), ty.to_token()))
+            .cloned()
             .unzip();
         let path_names = &path_names;
 
@@ -443,9 +441,8 @@ impl Route {
 
         let body_arg = match self.method {
             Method::Get | Method::Post(None) => None,
-            Method::Post(Some(ref body)) => {
-                let ty = body.to_token();
-                Some(quote! { AxJson(body): AxJson<#ty>, })
+            Method::Post(Some(ref body_ty)) => {
+                Some(quote! { AxJson(body): AxJson<#body_ty>, })
             }
         };
         let body_into = body_arg.as_ref().map(|_| ident("body"));
@@ -454,10 +451,7 @@ impl Route {
             .return_ty
             .1
             .as_ref()
-            .map(|ty| {
-                let ty = ty.to_token();
-                quote! { AxJson<#ty> }
-            })
+            .map(|ty| quote! { AxJson<#ty> })
             .unwrap_or(quote! { () });
         let return_err_ty = self.return_err_ty();
 
@@ -680,7 +674,6 @@ fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenS
         let def = match typ {
             Either::Left(strukt) => generate_struct_def(typename, strukt),
             Either::Right(typ) => {
-                let typ = typ.to_token();
                 // make a type alias
                 quote! {
                     pub type #typename = #typ;
@@ -797,7 +790,7 @@ impl_objlike!(AnySchema);
 fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
     let name = ident(name);
     let field = elems.keys().map(|s| ident(s));
-    let fieldtype: Vec<_> = elems.values().map(|s| s.to_token()).collect();
+    let fieldtype = elems.values();
     let derives = get_derive_tokens();
     let toks = quote! {
         #derives
@@ -814,29 +807,27 @@ fn get_derive_tokens() -> TokenStream {
     }
 }
 
-impl Type {
-    fn to_token(&self) -> TokenStream {
+impl quote::ToTokens for Type {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         use Type::*;
-        match self {
+        let toks = match self {
             String => quote! { String },
             F64 => quote! { f64 },
             I64 => quote! { i64 },
             Bool => quote! { bool },
-            Array(elem) => {
-                let inner = elem.to_token();
+            Array(inner) => {
                 quote! { Vec<#inner> }
             }
-            Option(typ) => {
-                let inner = typ.to_token();
+            Option(inner) => {
                 quote! { Option<#inner> }
             }
             Named(name) => {
-                let name = ident(name);
                 quote! { #name }
             }
             // TODO handle Any properly
             Any => todo!(),
-        }
+        };
+        toks.to_tokens(tokens);
     }
 }
 
@@ -932,13 +923,6 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
         }
     };
     server
-}
-
-fn id_ty_pair(id: &Ident, ty: &Type) -> TokenStream {
-    let ty = ty.to_token();
-    quote! {
-        #id: #ty
-    }
 }
 
 pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
