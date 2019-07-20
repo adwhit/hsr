@@ -6,11 +6,13 @@ use hsr_runtime::futures3::{
 };
 use regex::Regex;
 
-pub mod my_api {
+pub mod pet_api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
 
-use my_api::*;
+use pet_api::{
+    serve, CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
+};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {
@@ -18,16 +20,15 @@ impl Pet {
     }
 }
 
-pub struct Api {
-    database: lock::Mutex<Vec<Pet>>,
-}
-
+// An error to be used internally. Generally if this
+// gets returned from the top level, we just want to return "HTTP 500"
 pub enum InternalError {
     BadConnection,
     ParseFailure,
     ServerHasExploded,
 }
 
+// Boilerplate impls necessary to fulfil API contract
 impl hsr_runtime::HasStatusCode for InternalError {}
 impl hsr_runtime::Error for InternalError {}
 
@@ -38,6 +39,12 @@ impl hsr_runtime::HasStatusCode for Error {}
 
 type ApiResult<T> = std::result::Result<T, InternalError>;
 
+// We define an object against which to implement our API trait
+pub struct Api {
+    database: lock::Mutex<Vec<Pet>>,
+}
+
+// We simulate some kind of database interactions
 impl Api {
     async fn connect_db(&self) -> ApiResult<lock::MutexGuard<Vec<Pet>>> {
         if rand::random::<f32>() > 0.8 {
@@ -74,7 +81,14 @@ impl Api {
     }
 }
 
-impl my_api::PetstoreApi for Api {
+// The meat of the example. We fulfill the server interface as defined by the
+// `petstore.yaml` OpenAPI file by implementing the PetstoreApi trait.
+//
+// The trait function definitions may not be obvious just from reading the spec,
+// in which case it will be helpful to run `cargo doc` to see the trait rendered
+// by `rustdoc`. (Of course, if the trait is not implemented correcty, it will
+// not compile).
+impl PetstoreApi for Api {
     type Error = InternalError;
 
     fn new() -> Self {
@@ -123,4 +137,12 @@ impl my_api::PetstoreApi for Api {
         }
             .boxed()
     }
+}
+
+// Serve the API.
+//
+// Navigate your browser to http://localhost:8000/ui.html to see
+// the API as rendered by [Swagger UI](https://github.com/swagger-api/swagger-ui)
+fn main() -> Result<(), std::io::Error> {
+    serve::<Api>("localhost:8000")
 }
