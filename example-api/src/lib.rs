@@ -113,7 +113,7 @@ impl my_api::PetstoreApi for Api {
         // TODO This is how we would like it to work
         async move {
             self.lookup_pet(pet_id as usize)?
-             .ok_or_else(|| GetPetError::NotFound)
+                .ok_or_else(|| GetPetError::NotFound)
         }
             .boxed()
     }

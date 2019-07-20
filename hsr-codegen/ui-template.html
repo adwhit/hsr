@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>OpenAPI</title>
+        <link rel="stylesheet"  type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/3.23.1/swagger-ui.css">
+    </head>
+    <body>
+        <div id="swagger" ></div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/3.23.1/swagger-ui-bundle.js"></script>
+        <script>
+         document.addEventListener('DOMContentLoaded', function() {
+             SwaggerUIBundle({
+                 dom_id: '#swagger',
+                 url: "/spec.json"
+             });
+         }, false);
+        </script>
+    </body>
+</html>

@@ -20,6 +20,8 @@ use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
 
+const SWAGGER_UI_TEMPLATE: &'static str = include_str!("../ui-template.html");
+
 fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
@@ -341,7 +343,8 @@ impl Route {
         let mut status_codes = vec![];
         for (code, mb_ty) in &self.err_tys {
             status_codes.push(code.as_u16());
-            let variant_name = code.canonical_reason()
+            let variant_name = code
+                .canonical_reason()
                 .map(|reason| ident(reason.to_camel_case()))
                 .unwrap_or(ident(format!("E{}", code.as_str())));
             match mb_ty.as_ref().map(|ty| ty.to_token()) {
@@ -907,7 +910,22 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
             HttpServer::new(move || {
                 App::new()
                     .register_data(api.clone())
+                    // TODO make these routes configurable
+                    // Add route serving up the json spec
+                    .route("/spec.json", web::get().to(|| {
+                        HttpResponse::Ok()
+                            .set(actix_web::http::header::ContentType::json())
+                            .body(JSON_SPEC)
+                    }))
+                    // Add route serving up the rendered ui
+                    .route("/ui.html", web::get().to(|| {
+                        HttpResponse::Ok()
+                            .set(actix_web::http::header::ContentType::html())
+                            .body(UI_TEMPLATE)
+                    }))
+                    // Add the custom endpoints
                     #(.service(#resources))*
+
             })
                 .bind(host)?
                 .run()
@@ -924,12 +942,18 @@ fn id_ty_pair(id: &Ident, ty: &Type) -> TokenStream {
 }
 
 pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
+    // TODO add generate_from_json_file
     let f = fs::File::open(yaml)?;
     generate_from_yaml_source(f)
 }
 
-pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
-    let api: OpenAPI = serde_yaml::from_reader(yaml)?;
+pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String> {
+    let mut openapi_source = String::new();
+    yaml.read_to_string(&mut openapi_source)?;
+    let api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
+
+    let json_spec = serde_json::to_string(&api).expect("Bad api serialization");
+
     let trait_name = api_trait_name(&api);
     debug!("Gather types");
     let typs = gather_types(&api)?;
@@ -947,10 +971,14 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
     let rust_server = generate_rust_server(&routes, &trait_name);
     let code = quote! {
 
+        // Dump the spec and the ui template in the source file, for serving ui
+        const JSON_SPEC: &'static str = #json_spec;
+        const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
+
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::{Void, Error as HsrError, HasStatusCode};
         use hsr_runtime::actix_web::{
-            App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
+            self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             http::StatusCode,
         };
@@ -966,6 +994,7 @@ pub fn generate_from_yaml_source(yaml: impl std::io::Read) -> Result<String> {
         #rust_dispatchers
         // Server
         #rust_server
+
     };
     debug!("Prettify");
     prettify_code(code.to_string())
