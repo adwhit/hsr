@@ -30,11 +30,6 @@ paths:
       responses:
         '200':
           description: A paged array of pets
-          # headers:
-          #   x-next:
-          #     description: A link to the next page of responses
-          #     schema:
-          #       type: string
           content:
             application/json:
               schema:
@@ -55,7 +50,7 @@ paths:
               $ref: '#/components/schemas/NewPet'
       responses:
         '201':
-          description: Null response
+          description: pet created
         '403':
           description: some forbidden
         '409':
@@ -101,6 +96,7 @@ paths:
 components:
   schemas:
     Pet:
+      description: A cat or a dog or a mouse or a rabbit
       required:
         - id
         - name

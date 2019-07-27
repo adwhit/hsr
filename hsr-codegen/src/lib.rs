@@ -28,7 +28,7 @@ fn ident(s: impl fmt::Display) -> QIdent {
 
 // TODO use IndexMap to preserver ordering
 type Map<T> = BTreeMap<String, T>;
-type IdMap = BTreeMap<Ident, Type>;
+type IdMap<T> = BTreeMap<Ident, T>;
 type TypeMap<T> = BTreeMap<TypeName, T>;
 
 #[derive(Debug, From, Fail)]
@@ -153,7 +153,7 @@ struct Route {
     operation_id: Ident,
     method: Method,
     path_args: Vec<(Ident, Type)>,
-    query_args: IdMap,
+    query_args: IdMap<Type>,
     segments: Vec<PathSegment>,
     return_ty: (StatusCode, Option<Type>),
     err_tys: Vec<(StatusCode, Option<Type>)>,
@@ -279,9 +279,23 @@ impl Route {
         }
     }
 
+    /// A query string is a group of key=value pairs. We handle this by collecting
+    /// the query args and generating a type which holds them all.
+    /// e.g. a string ?foo=10&bar=hello could be deserialized by a struct
+    /// `struct EndpointQueryArg { foo: int, bar: String }`
     fn generate_query_type(&self) -> Option<TokenStream> {
+        let fields: Vec<Field> = self
+            .query_args
+            .iter()
+            .map(|(ident, ty)| Field {
+                name: ident.clone(),
+                descr: None,
+                ty: ty.clone(),
+            })
+            .collect();
         let name = self.generate_query_type_name()?;
-        let def = Struct::new(self.query_args.clone()).unwrap();
+        let descr = format!("Type representing the query string of `{}`", self.operation_id);
+        let def = Struct::new(Some(descr), fields).unwrap();
         Some(generate_struct_def(&name, &def))
     }
 
@@ -731,30 +745,43 @@ enum Type {
     Named(TypeName),
 }
 
-struct Struct(IdMap);
+struct Struct {
+    descr: Option<String>,
+    fields: Vec<Field>,
+}
+
+struct Field {
+    name: Ident,
+    descr: Option<String>,
+    ty: Type,
+}
 
 impl Struct {
-    fn new(fields: IdMap) -> Result<Struct> {
+    fn new(descr: Option<String>, fields: Vec<Field>) -> Result<Struct> {
         if fields.is_empty() {
             return Err(Error::EmptyStruct);
         }
         // TODO other validation?
-        Ok(Struct(fields))
+        Ok(Struct { descr, fields })
     }
 
-    fn from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Self> {
-        let mut fields = IdMap::new();
+    fn from_objlike<T: ObjectLike>(descr: Option<String>, obj: &T, api: &OpenAPI) -> Result<Self> {
+        let mut fields = Vec::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
-            let mut inner = build_type(&schemaref, api).and_then(discard_struct_def)?;
+            let mut ty = build_type(&schemaref, api).and_then(discard_struct_def)?;
             if !required_args.contains(name) {
-                inner = Type::Option(Box::new(inner));
+                ty = Type::Option(Box::new(ty));
             }
-            let name = Ident::new(name)?;
-            assert!(fields.insert(name, inner).is_none());
+            let field = Field {
+                name: Ident::new(name)?,
+                descr: None,
+                ty,
+            };
+            fields.push(field);
         }
-        Self::new(fields)
+        Self::new(descr, fields)
     }
 }
 
@@ -779,15 +806,23 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
-fn generate_struct_def(name: &TypeName, Struct(elems): &Struct) -> TokenStream {
+fn generate_struct_def(name: &TypeName, Struct { fields, descr }: &Struct) -> TokenStream {
     let name = ident(name);
-    let field = elems.keys().map(|s| ident(s));
-    let fieldtype = elems.values();
+    let fieldname = fields.iter().map(|f| &f.name);
+    let fieldtype = fields.iter().map(|f| &f.ty);
+    let fielddescr = fields
+        .iter()
+        .map(|f| f.descr.as_ref().map(|d| quote! { #[doc = #d]}));
+    let descr = descr.as_ref().map(|d| quote! { #[doc = #d]});
     let derives = get_derive_tokens();
     let toks = quote! {
         #derives
+        #descr
         pub struct #name {
-            #(pub #field: #fieldtype),*
+            #(
+                #fielddescr
+                pub #fieldname: #fieldtype
+            ),*
         }
     };
     toks
@@ -832,13 +867,14 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Eith
         }
         ReferenceOr::Item(item) => item,
     };
+    let descr = schema.schema_data.description.clone();
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
             if obj.properties.is_empty() {
                 return Ok(Either::Right(Type::Any));
             } else {
-                return Struct::from_objlike(obj, api).map(Either::Left);
+                return Struct::from_objlike(descr, obj, api).map(Either::Left);
             }
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
@@ -856,7 +892,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Eith
             Type::Array(Box::new(inner))
         }
         ApiType::Object(obj) => {
-            return Struct::from_objlike(obj, api).map(Either::Left);
+            return Struct::from_objlike(descr, obj, api).map(Either::Left);
         }
     };
     Ok(Either::Right(typ))
