@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 #![feature(todo_macro)]
 
-use std::collections::{BTreeMap, BTreeSet as Set};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -12,10 +11,11 @@ use derive_more::{Display, From};
 use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
-// TODO https://github.com/glademiller/openapiv3/issues/10
-// use indexmap::{IndexMap, IndexSet as Set};
+use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
-use openapiv3::{AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType};
+use openapiv3::{AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType,
+                StatusCode as ApiStatusCode
+};
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
@@ -27,9 +27,9 @@ fn ident(s: impl fmt::Display) -> QIdent {
 }
 
 // TODO use IndexMap to preserver ordering
-type Map<T> = BTreeMap<String, T>;
-type IdMap<T> = BTreeMap<Ident, T>;
-type TypeMap<T> = BTreeMap<TypeName, T>;
+type Map<T> = IndexMap<String, T>;
+type IdMap<T> = IndexMap<Ident, T>;
+type TypeMap<T> = IndexMap<TypeName, T>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -63,6 +63,8 @@ pub enum Error {
     BadTypeName(String),
     #[fail(display = "Malformed codegen")]
     BadCodegen,
+    #[fail(display = "status code '{}' not supported", _0)]
+    BadStatusCode(ApiStatusCode)
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -219,12 +221,15 @@ impl Route {
         }
 
         // Check responses are valid status codes
-        // We only support 2XX (success) and 4XX (error) codes
+        // We only support 2XX (success) and 4XX (error) codes (but not ranges)
         let mut success_code = None;
         let mut error_codes = vec![];
         for code in responses.responses.keys() {
-            let status = StatusCode::from_bytes(code.as_bytes())
-                .map_err(|_| Error::Todo(format!("Invalid status code: {}", code)))?;
+            let status = match code {
+                ApiStatusCode::Code(v) => StatusCode::from_u16(*v)
+                    .map_err(|_| Error::BadStatusCode(code.clone())),
+                _ => return Err(Error::BadStatusCode(code.clone()))
+            }?;
             if status.is_success() {
                 if success_code.replace(status).is_some() {
                     return Err(Error::Todo("Expected exactly one 'success' status".into()));
@@ -239,13 +244,15 @@ impl Route {
         let return_ty = success_code
             .ok_or_else(|| Error::Todo("Expected exactly one 'success' status".into()))
             .and_then(|status| {
-                let ref_or_resp = &responses.responses[status.as_str()];
+                let code = ApiStatusCode::Code(status.as_u16());
+                let ref_or_resp = &responses.responses[&code];
                 get_type_from_response(&ref_or_resp, api).map(|ty| (status, ty))
             })?;
         let err_tys = error_codes
             .iter()
             .map(|&e| {
-                let ref_or_resp = &responses.responses[e.as_str()];
+                let code = ApiStatusCode::Code(e.as_u16());
+                let ref_or_resp = &responses.responses[&code];
                 get_type_from_response(&ref_or_resp, api).map(|ty| (e, ty))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -521,8 +528,8 @@ fn get_type_from_response(
             "content type must be 'application/json'".into(),
         ));
     } else {
-        // TODO remove unwrap_ref: https://github.com/glademiller/openapiv3/issues/9
-        let ref_or_schema = unwrap_ref(resp.content.get("application/json").unwrap())?
+        let ref_or_schema = resp.content.get("application/json")
+            .unwrap()
             .schema
             .as_ref()
             .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
@@ -618,7 +625,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
 
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
-    debug!("Found paths: {:?}", api.paths.keys());
+    debug!("Found paths: {:?}", api.paths.keys().collect::<Vec<_>>());
     for (path, pathitem) in &api.paths {
         debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref(&pathitem)?;

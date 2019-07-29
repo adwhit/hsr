@@ -100,8 +100,8 @@ impl PetstoreApi for Api {
     // TODO all these i64s should be u64s
     fn get_all_pets(
         &self,
-        filter: Option<String>,
         limit: i64,
+        filter: Option<String>,
     ) -> BoxFuture<Result<Pets, GetAllPetsError<Self::Error>>> {
         async move {
             let regex = if let Some(filter) = filter {

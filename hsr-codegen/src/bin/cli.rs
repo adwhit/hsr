@@ -1,5 +1,3 @@
-use hsr_codegen;
-
 use std::path::PathBuf;
 
 use structopt::StructOpt;
