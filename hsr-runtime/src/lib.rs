@@ -1,8 +1,10 @@
 pub use actix_web;
+pub use actix_http;
 pub use awc;
 pub use futures1;
 pub use futures3;
 pub use serde;
+pub use actix_http::http::Uri;
 
 use actix_web::{Either, HttpRequest, HttpResponse, Responder};
 use std::fmt;

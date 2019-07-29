@@ -523,7 +523,7 @@ impl Route {
         let ok_status_code = self.return_ty.0.as_u16();
 
         let code = quote! {
-            fn #opid<A: #trait_name>(
+            fn #opid<A: #trait_name + Send + Sync>(
                 data: AxData<A>,
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
@@ -775,9 +775,9 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &T
     }
     quote! {
         #descr
-        pub trait #trait_name: Send + Sync + 'static {
+        pub trait #trait_name: 'static {
             type Error: HsrError;
-            fn new() -> Self;
+            fn new(host: Uri) -> Self;
 
             #methods
         }
@@ -1049,33 +1049,38 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
         .collect();
 
     let server = quote! {
-        /// Serve the API on a given host.
-        /// Once started, the server blocks indefinitely.
-        pub fn serve<A: #trait_name>(host: &str) -> std::io::Result<()> {
-            println!("Serving on host {}", host);
-            let api = AxData::new(A::new());
-            HttpServer::new(move || {
-                App::new()
-                    .register_data(api.clone())
+        pub mod server {
+            use super::*;
+
+            /// Serve the API on a given host.
+            /// Once started, the server blocks indefinitely.
+            pub fn serve<A: #trait_name + Send + Sync>(host: Uri) -> std::io::Result<()> {
+                println!("Serving on host {}", host);
+                let api = AxData::new(A::new(host.clone()));
+                HttpServer::new(move || {
+                    App::new()
+                        .register_data(api.clone())
                     // TODO make these routes configurable
                     // Add route serving up the json spec
-                    .route("/spec.json", web::get().to(|| {
-                        HttpResponse::Ok()
-                            .set(actix_web::http::header::ContentType::json())
-                            .body(JSON_SPEC)
-                    }))
+                        .route("/spec.json", web::get().to(|| {
+                            HttpResponse::Ok()
+                                .set(actix_web::http::header::ContentType::json())
+                                .body(JSON_SPEC)
+                        }))
                     // Add route serving up the rendered ui
-                    .route("/ui.html", web::get().to(|| {
-                        HttpResponse::Ok()
-                            .set(actix_web::http::header::ContentType::html())
-                            .body(UI_TEMPLATE)
-                    }))
+                        .route("/ui.html", web::get().to(|| {
+                            HttpResponse::Ok()
+                                .set(actix_web::http::header::ContentType::html())
+                                .body(UI_TEMPLATE)
+                        }))
                     // Add the custom endpoints
-                    #(.service(#resources))*
+                        #(.service(#resources))*
 
-            })
-                .bind(host)?
-                .run()
+                })
+                // TODO host, uri, bind?? Confusing. Decide best way to pass host around
+                    .bind(host.host().unwrap())?
+                    .run()
+            }
         }
     };
     server
@@ -1090,9 +1095,8 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     }
 
     quote! {
-        mod client {
+        pub mod client {
             use super::*;
-            pub use hsr_runtime::awc::http::Uri;
             use hsr_runtime::awc::Client as ActixClient;
             use hsr_runtime::ClientError;
 
@@ -1157,8 +1161,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         use hsr_runtime::actix_web::{
             self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
-            http::StatusCode,
         };
+        use hsr_runtime::actix_http::http::{Uri, StatusCode};
         use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
         use hsr_runtime::futures1::Future as Future1;
 

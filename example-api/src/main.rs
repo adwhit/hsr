@@ -11,7 +11,7 @@ pub mod pet_api {
 }
 
 use pet_api::{
-    serve, CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
+    server, CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
 };
 
 impl Pet {
@@ -91,7 +91,7 @@ impl Api {
 impl PetstoreApi for Api {
     type Error = InternalError;
 
-    fn new() -> Self {
+    fn new(_uri: hsr_runtime::Uri) -> Self {
         Api {
             database: lock::Mutex::new(vec![]),
         }
@@ -144,5 +144,6 @@ impl PetstoreApi for Api {
 // Navigate your browser to http://localhost:8000/ui.html to see
 // the API as rendered by [Swagger UI](https://github.com/swagger-api/swagger-ui)
 fn main() -> Result<(), std::io::Error> {
-    serve::<Api>("localhost:8000")
+    let uri = "localhost:8000".parse().unwrap();
+    server::serve::<Api>(uri)
 }
