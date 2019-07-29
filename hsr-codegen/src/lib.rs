@@ -152,6 +152,7 @@ impl fmt::Display for Method {
 // If it has been constructed, the route is logically sound
 #[derive(Debug, Clone)]
 struct Route {
+    summary: Option<String>,
     operation_id: Ident,
     method: Method,
     path_args: Vec<(Ident, Type)>,
@@ -164,6 +165,7 @@ struct Route {
 
 impl Route {
     fn new(
+        summary: Option<String>,
         path: &str,
         method: Method,
         operation_id: &Option<String>,
@@ -267,6 +269,7 @@ impl Route {
             .transpose()?;
 
         Ok(Route {
+            summary,
             operation_id,
             path_args,
             query_args,
@@ -303,7 +306,7 @@ impl Route {
         let name = self.generate_query_type_name()?;
         let descr = format!("Type representing the query string of `{}`", self.operation_id);
         let def = Struct::new(Some(descr), fields).unwrap();
-        Some(generate_struct_def(&name, &def))
+        Some(generate_struct_def(&name, &def, Visibility::Private))
     }
 
     /// Fetch the name of the return type identified as an error, if it exists.
@@ -349,7 +352,9 @@ impl Route {
                 Some(quote! { #name: #body_ty, })
             }
         };
+        let docs = self.summary.as_ref().map(doc_comment);
         quote! {
+            #docs
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty>;
         }
     }
@@ -632,6 +637,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
         let mut pathroutes = Vec::new();
         if let Some(ref op) = pathitem.get {
             let route = Route::new(
+                op.summary.clone(),
                 path,
                 Method::Get,
                 &op.operation_id,
@@ -663,6 +669,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
                 None
             };
             let route = Route::new(
+                op.summary.clone(),
                 path,
                 Method::Post(body),
                 &op.operation_id,
@@ -685,7 +692,7 @@ fn generate_rust_component_types(typs: &TypeMap<Either<Struct, Type>>) -> TokenS
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
         let def = match typ {
-            Either::Left(strukt) => generate_struct_def(typename, strukt),
+            Either::Left(strukt) => generate_struct_def(typename, strukt, Visibility::Public),
             Either::Right(typ) => {
                 // make a type alias
                 quote! {
@@ -813,19 +820,43 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
-fn generate_struct_def(name: &TypeName, Struct { fields, descr }: &Struct) -> TokenStream {
+fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
+    let msg = msg.as_ref();
+    quote! {
+        #[doc = #msg]
+    }
+}
+
+enum Visibility {
+    Private,
+    Public,
+}
+
+impl quote::ToTokens for Visibility {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Visibility::Public => {
+                let q = quote! { pub };
+                q.to_tokens(tokens);
+            }
+            Visibility::Private => (),
+        }
+    }
+}
+
+fn generate_struct_def(name: &TypeName, Struct { fields, descr }: &Struct, vis: Visibility) -> TokenStream {
     let name = ident(name);
     let fieldname = fields.iter().map(|f| &f.name);
     let fieldtype = fields.iter().map(|f| &f.ty);
     let fielddescr = fields
         .iter()
-        .map(|f| f.descr.as_ref().map(|d| quote! { #[doc = #d]}));
-    let descr = descr.as_ref().map(|d| quote! { #[doc = #d]});
+        .map(|f| f.descr.as_ref().map(doc_comment));
+    let descr = descr.as_ref().map(doc_comment);
     let derives = get_derive_tokens();
     let toks = quote! {
         #derives
         #descr
-        pub struct #name {
+        #vis struct #name {
             #(
                 #fielddescr
                 pub #fieldname: #fieldtype
@@ -929,7 +960,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
     let server = quote! {
         /// Serve the API on a given host.
-        /// Once sucessfully initialize, the server Blocks indefinitely.
+        /// Once started, the server blocks indefinitely.
         pub fn serve<A: #trait_name>(host: &str) -> std::io::Result<()> {
             println!("Serving on host {}", host);
             let api = AxData::new(A::new());
@@ -1015,11 +1046,20 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         #rust_server
 
     };
-    debug!("Prettify");
-    prettify_code(code.to_string())
+    let code = code.to_string();
+    #[cfg(feature = "rustfmt")]
+    {
+        debug!("Prettify");
+        prettify_code(code)
+    }
+    #[cfg(not(feature = "rustfmt"))]
+    {
+        Ok(code)
+    }
 }
 
 /// Run the code through `rustfmt`.
+#[cfg(feature = "rustfmt")]
 pub fn prettify_code(input: String) -> Result<String> {
     let mut buf = Vec::new();
     {

@@ -16,7 +16,7 @@ proc-macro2 = "0.4.30"
 quote = "0.6.13"
 regex = "1.2.0"
 log = "0.4.8"
-rustfmt-nightly = "1.4.0"
+rustfmt-nightly = { version = "1.4.0", optional = true }
 serde_yaml = "0.8.9"
 structopt = "0.2.18"
 syn = "0.15.42"
@@ -29,3 +29,6 @@ diff = "0.1.11"
 env_logger = "0.6.2"
 tempdir = "0.3.7"
 yansi = "0.5.0"
+
+[features]
+rustfmt = [ "rustfmt-nightly" ]
