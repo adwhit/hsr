@@ -64,7 +64,7 @@ pub enum Error {
     #[fail(display = "Malformed codegen")]
     BadCodegen,
     #[fail(display = "status code '{}' not supported", _0)]
-    BadStatusCode(ApiStatusCode)
+    BadStatusCode(ApiStatusCode),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -167,9 +167,9 @@ struct Route {
     summary: Option<String>,
     operation_id: Ident,
     method: Method,
+    path_segments: Vec<PathSegment>,
     path_args: Vec<(Ident, Type)>,
     query_args: IdMap<Type>,
-    segments: Vec<PathSegment>,
     return_ty: (StatusCode, Option<Type>),
     err_tys: Vec<(StatusCode, Option<Type>)>,
     default_err_ty: Option<Type>,
@@ -185,7 +185,7 @@ impl Route {
         responses: &openapiv3::Responses,
         api: &OpenAPI,
     ) -> Result<Route> {
-        let segments = analyse_path(path)?;
+        let path_segments = analyse_path(path)?;
         let operation_id = match operation_id {
             Some(ref op) => Ident::new(op),
             None => Err(Error::NoOperationId(path.into())),
@@ -285,7 +285,7 @@ impl Route {
             operation_id,
             path_args,
             query_args,
-            segments,
+            path_segments,
             method,
             return_ty,
             err_tys,
@@ -370,6 +370,23 @@ impl Route {
         }
     }
 
+    fn build_path_template(&self) -> String {
+        let mut path = "/".to_string();
+        for segment in &self.path_segments {
+            match segment {
+                PathSegment::Literal(p) => {
+                    path.push_str(&p);
+                    path.push('/');
+                }
+                PathSegment::Parameter(_) => {
+                    path.push_str("{}/");
+                }
+            }
+        }
+        path
+    }
+
+
     fn generate_client_impl(&self) -> TokenStream {
         let opid = &self.operation_id;
         let return_ty = self.return_ty();
@@ -378,6 +395,7 @@ impl Route {
             .iter()
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
+        let path_names = self.path_args.iter().map(|(id, _ty)| id);
         let queries: Vec<_> = self
             .query_args
             .iter()
@@ -394,8 +412,10 @@ impl Route {
                 Some(quote! { #name: #body_ty, })
             }
         };
+        let path_template = self.build_path_template();
         quote! {
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty> {
+                let path = format!(#path_template, #(#path_names,)*);
                 unimplemented!()
             }
         }
@@ -669,6 +689,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     // TODO check for duplicates
     Ok(segments)
 }
+
 
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
