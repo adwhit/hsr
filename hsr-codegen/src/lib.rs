@@ -311,7 +311,6 @@ impl Route {
             .iter()
             .map(|(ident, ty)| Field {
                 name: ident.clone(),
-                descr: None,
                 ty: ty.clone(),
             })
             .collect();
@@ -368,6 +367,37 @@ impl Route {
         quote! {
             #docs
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty>;
+        }
+    }
+
+    fn generate_client_impl(&self) -> TokenStream {
+        let opid = &self.operation_id;
+        let return_ty = self.return_ty();
+        let paths: Vec<_> = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| quote! { #id: #ty })
+            .collect();
+        let queries: Vec<_> = self
+            .query_args
+            .iter()
+            .map(|(id, ty)| quote! { #id: #ty })
+            .collect();
+        let body_arg = match self.method {
+            Method::Get | Method::Post(None) => None,
+            Method::Post(Some(ref body_ty)) => {
+                let name = if let TypeInner::Named(typename) = &body_ty.typ {
+                    ident(typename.to_string().to_snake_case())
+                } else {
+                    ident("payload")
+                };
+                Some(quote! { #name: #body_ty, })
+            }
+        };
+        quote! {
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty> {
+                unimplemented!()
+            }
         }
     }
 
@@ -707,8 +737,10 @@ fn generate_rust_component_types(typs: &TypeMap<TypeWithMeta<Either<Struct, Type
         let def = match &typ.typ {
             Either::Left(strukt) => generate_struct_def(typename, descr, strukt, Visibility::Public),
             Either::Right(typ) => {
+                let descr = descr.map(doc_comment);
                 // make a type alias
                 quote! {
+                    #descr
                     pub type #typename = #typ;
                 }
             }
@@ -733,14 +765,16 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     tokens
 }
 
-fn generate_rust_interface(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &TypeName) -> TokenStream {
     let mut methods = TokenStream::new();
+    let descr = doc_comment(format!("Api generated from '{}' spec", title));
     for (_, route_methods) in routes {
         for route in route_methods {
             methods.extend(route.generate_signature());
         }
     }
     quote! {
+        #descr
         pub trait #trait_name: Send + Sync + 'static {
             type Error: HsrError;
             fn new() -> Self;
@@ -782,13 +816,6 @@ impl Type {
             typ: TypeInner::Option(Box::new(self))
         }
     }
-
-    fn to_array(self) -> Self {
-        Self {
-            meta: self.meta.clone(),
-            typ: TypeInner::Array(Box::new(self))
-        }
-    }
 }
 
 type Type = TypeWithMeta<TypeInner>;
@@ -807,13 +834,6 @@ enum TypeInner {
 }
 
 impl TypeInner {
-    fn with_meta(self, meta: SchemaData) -> TypeWithMeta<Self> {
-        TypeWithMeta {
-            meta,
-            typ: self
-        }
-    }
-
     fn with_meta_either(self, meta: SchemaData) -> StructOrType {
         TypeWithMeta {
             meta,
@@ -823,13 +843,6 @@ impl TypeInner {
 }
 
 impl Struct {
-    fn with_meta(self, meta: SchemaData) -> TypeWithMeta<Self> {
-        TypeWithMeta {
-            meta,
-            typ: self
-        }
-    }
-
     fn with_meta_either(self, meta: SchemaData) -> StructOrType {
         TypeWithMeta {
             meta,
@@ -838,13 +851,14 @@ impl Struct {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct Struct {
     fields: Vec<Field>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct Field {
     name: Ident,
-    descr: Option<String>,
     ty: Type,
 }
 
@@ -868,7 +882,6 @@ impl Struct {
             }
             let field = Field {
                 name: Ident::new(name)?,
-                descr: None,
                 ty,
             };
             fields.push(field);
@@ -928,7 +941,7 @@ fn generate_struct_def(name: &TypeName, descr: Option<&str>, Struct { fields }: 
     let fieldtype = fields.iter().map(|f| &f.ty);
     let fielddescr = fields
         .iter()
-        .map(|f| f.descr.as_ref().map(doc_comment));
+        .map(|f| f.ty.meta.description.as_ref().map(doc_comment));
     let descr = descr.as_ref().map(doc_comment);
     let derives = get_derive_tokens();
     let toks = quote! {
@@ -1068,6 +1081,41 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
     server
 }
 
+fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+    let mut method_impls = TokenStream::new();
+    for (_, route_methods) in routes {
+        for route in route_methods {
+            method_impls.extend(route.generate_client_impl());
+        }
+    }
+
+    quote! {
+        mod client {
+            use super::*;
+            pub use hsr_runtime::awc::http::Uri;
+            use hsr_runtime::awc::Client as ActixClient;
+            use hsr_runtime::ClientError;
+
+            pub struct Client {
+                host: Uri,
+                inner: ActixClient,
+            }
+
+            impl #trait_name for Client {
+                type Error = ClientError;
+                fn new(host: Uri) -> Self {
+                    Client {
+                        host: host,
+                        inner: ActixClient::new()
+                    }
+                }
+
+                #method_impls
+            }
+        }
+    }
+}
+
 pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
     // TODO add generate_from_json_file
     let f = fs::File::open(yaml)?;
@@ -1091,11 +1139,13 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     debug!("Generate route types");
     let rust_route_types = generate_rust_route_types(&routes);
     debug!("Generate API trait");
-    let rust_trait = generate_rust_interface(&routes, &trait_name);
+    let rust_trait = generate_rust_interface(&routes, &api.info.title, &trait_name);
     debug!("Generate dispatchers");
     let rust_dispatchers = generate_rust_dispatchers(&routes, &trait_name);
     debug!("Generate server");
     let rust_server = generate_rust_server(&routes, &trait_name);
+    debug!("Generate clientr");
+    let rust_client = generate_rust_client(&routes, &trait_name);
     let code = quote! {
 
         // Dump the spec and the ui template in the source file, for serving ui
@@ -1121,6 +1171,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         #rust_dispatchers
         // Server
         #rust_server
+        // Client
+        #rust_client
 
     };
     let code = code.to_string();

@@ -102,9 +102,11 @@ components:
         - name
       properties:
         id:
+          description: Unique identifier
           type: integer
           format: int64
         name:
+          description: Name of pet
           type: string
         tag:
           type: string
@@ -114,6 +116,7 @@ components:
         - name
       properties:
         name:
+          description: Name of pet
           type: string
         tag:
           type: string

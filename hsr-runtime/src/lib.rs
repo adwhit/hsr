@@ -1,4 +1,5 @@
 pub use actix_web;
+pub use awc;
 pub use futures1;
 pub use futures3;
 pub use serde;
@@ -6,6 +7,7 @@ pub use serde;
 use actix_web::{Either, HttpRequest, HttpResponse, Responder};
 use std::fmt;
 
+#[doc(hidden)]
 pub enum Void {}
 
 impl fmt::Debug for Void {
@@ -47,3 +49,8 @@ pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
 }
 
 pub trait Error: HasStatusCode {}
+
+pub struct ClientError;
+
+impl HasStatusCode for ClientError {}
+impl Error for ClientError {}

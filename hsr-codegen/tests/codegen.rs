@@ -123,6 +123,9 @@ fn build_types_simple() {
         }
     }
     .to_string();
-    let expect = hsr_codegen::prettify_code(expect).unwrap();
+    #[cfg(feature = "rustfmt")]
+    {
+        let expect = hsr_codegen::prettify_code(expect).unwrap();
+    }
     assert_diff(&code, &expect);
 }
