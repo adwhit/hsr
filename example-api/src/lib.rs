@@ -12,8 +12,9 @@ pub mod pet_api {
 }
 
 use pet_api::{
-    server, CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
+    CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
 };
+pub use pet_api::{client, server};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {
@@ -140,11 +141,3 @@ impl PetstoreApi for Api {
     }
 }
 
-// Serve the API.
-//
-// Navigate your browser to http://localhost:8000/ui.html to see
-// the API as rendered by [Swagger UI](https://github.com/swagger-api/swagger-ui)
-fn main() -> Result<(), std::io::Error> {
-    let uri = "localhost:8000".parse().unwrap();
-    server::serve::<Api>(uri)
-}

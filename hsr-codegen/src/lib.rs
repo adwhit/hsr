@@ -441,26 +441,26 @@ impl Route {
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
 
-        let (body_arg, request_body) = match self.method {
-            Method::Get => (None, None),
-            Method::Post(None) => (None, None),
+        let (body_arg, send_request) = match self.method {
+            Method::Get | Method::Post(None) => (None, quote!{.send()}),
             Method::Post(Some(ref body_ty)) => {
                 (
                     Some(quote! { payload: #body_ty, }),
-                    Some(quote! { self.inner })
+                    quote! { .send_json(&payload) }
                 )
             }
         };
         let method = self.method.as_const();
 
         quote! {
+            #[allow(unused_mut)]
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
                 // Build up our request
                 let path = format!(#path_template, self.host, #(#path_names,)*);
                 self.inner
                     .request(Method::#method, path)
                     // Send, giving a future1 contained an HttpResponse
-                    .send()
+                    #send_request
                     .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
                     .and_then(|mut resp| {
                         // We match on the status type to handle the return correctly
@@ -1137,6 +1137,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
             pub fn serve<A: #trait_name + Send + Sync>(host: Uri) -> std::io::Result<()> {
                 println!("Serving on host {}", host);
                 let api = AxData::new(A::new(host.clone()));
+                // TODO break this into a 'configure' step
                 HttpServer::new(move || {
                     App::new()
                         .register_data(api.clone())
@@ -1158,7 +1159,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
                 })
                 // TODO host, uri, bind?? Confusing. Decide best way to pass host around
-                    .bind(host.host().unwrap())?
+                    .bind((host.host().unwrap(), host.port_u16().unwrap()))?
                     .run()
             }
         }
@@ -1248,7 +1249,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         use hsr_runtime::actix_http::http::{Uri, StatusCode};
         use hsr_runtime::futures3::future::{FutureExt, TryFutureExt};
         use hsr_runtime::LocalBoxFuture3;
-        use hsr_runtime::futures1::{Future as Future1, future::Either as FutEither};
+        use hsr_runtime::futures1::Future as Future1;
 
         // TypeInner definitions
         #rust_component_types
