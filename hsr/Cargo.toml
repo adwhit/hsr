@@ -1,5 +1,5 @@
 [package]
-name = "hsr-runtime"
+name = "hsr"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"

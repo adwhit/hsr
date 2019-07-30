@@ -26,7 +26,6 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
-// TODO use IndexMap to preserver ordering
 type Map<T> = IndexMap<String, T>;
 type IdMap<T> = IndexMap<Ident, T>;
 type TypeMap<T> = IndexMap<TypeName, T>;
@@ -642,7 +641,7 @@ impl Route {
                         #maybe_wrap_return_val
                     // give outcome a status code (simple way of overriding the Responder return type)
                     .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
-                    Result::<_, Void>::Ok(hsr_runtime::result_to_either(out))
+                    Result::<_, Void>::Ok(hsr::result_to_either(out))
                 }
                 // turn it into a Future1
                 .boxed_local()
@@ -1197,12 +1196,12 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     quote! {
         pub mod client {
             use super::*;
-            use hsr_runtime::actix_http::http::Method;
-            use hsr_runtime::awc::Client as ActixClient;
-            use hsr_runtime::ClientError;
-            use hsr_runtime::futures1::future::{err as fut_err, ok as fut_ok};
-            use hsr_runtime::futures3::compat::Future01CompatExt;
-            use hsr_runtime::serde_urlencoded;
+            use hsr::actix_http::http::Method;
+            use hsr::awc::Client as ActixClient;
+            use hsr::ClientError;
+            use hsr::futures1::future::{err as fut_err, ok as fut_ok};
+            use hsr::futures3::compat::Future01CompatExt;
+            use hsr::serde_urlencoded;
 
             pub struct Client {
                 domain: Url,
@@ -1261,17 +1260,17 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
 
         // TODO is there a way to re-export the serde derive macros?
-        use hsr_runtime::{Void, Error as HsrError, HasStatusCode};
-        use hsr_runtime::actix_web::{
+        use hsr::{Void, Error as HsrError, HasStatusCode};
+        use hsr::actix_web::{
             self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
             middleware::Logger
         };
-        use hsr_runtime::url::Url;
-        use hsr_runtime::actix_http::http::{StatusCode};
-        use hsr_runtime::futures3::future::{FutureExt, TryFutureExt};
-        use hsr_runtime::LocalBoxFuture3;
-        use hsr_runtime::futures1::Future as Future1;
+        use hsr::url::Url;
+        use hsr::actix_http::http::{StatusCode};
+        use hsr::futures3::future::{FutureExt, TryFutureExt};
+        use hsr::LocalBoxFuture3;
+        use hsr::futures1::Future as Future1;
 
         // TypeInner definitions
         #rust_component_types

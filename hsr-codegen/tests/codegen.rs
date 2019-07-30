@@ -29,11 +29,11 @@ fn build_types_simple() {
     // This is the complete expected code generation output
     // It should compile!
     let expect = quote! {
-        use hsr_runtime::Void;
-        use hsr_runtime::actix_web::{App, HttpServer};
-        use hsr_runtime::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
-        use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
-        use hsr_runtime::futures1::Future as Future1;
+        use hsr::Void;
+        use hsr::actix_web::{App, HttpServer};
+        use hsr::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
+        use hsr::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
+        use hsr::futures1::Future as Future1;
 
         #[derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
         pub struct Error {

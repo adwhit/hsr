@@ -8,7 +8,7 @@ edition = "2018"
 hsr-codegen = { path = "../hsr-codegen" }
 
 [dependencies]
-hsr-runtime = { path = "../hsr-runtime" }
+hsr = { path = "../hsr" }
 serde = { version = "1.0.98", features = ['derive'] }
 regex = "1.2.0"
 rand = "0.7.0"

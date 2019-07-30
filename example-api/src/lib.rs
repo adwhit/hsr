@@ -1,10 +1,10 @@
 #![feature(async_await)]
 
-use hsr_runtime::futures3::{
+use hsr::futures3::{
     future::{FutureExt},
     lock,
 };
-use hsr_runtime::LocalBoxFuture3;
+use hsr::LocalBoxFuture3;
 use regex::Regex;
 
 pub mod pet_api {
@@ -31,13 +31,13 @@ pub enum InternalError {
 }
 
 // Boilerplate impls necessary to fulfil API contract
-impl hsr_runtime::HasStatusCode for InternalError {}
-impl hsr_runtime::Error for InternalError {}
+impl hsr::HasStatusCode for InternalError {}
+impl hsr::Error for InternalError {}
 
 // TODO is it possible to remove the requirement for this impl?
 // Alternatively, add a trait bound for HasStatusCode to give a
 // nicer error?
-impl hsr_runtime::HasStatusCode for Error {}
+impl hsr::HasStatusCode for Error {}
 
 type ApiResult<T> = std::result::Result<T, InternalError>;
 
@@ -93,7 +93,7 @@ impl Api {
 impl PetstoreApi for Api {
     type Error = InternalError;
 
-    fn new(_uri: hsr_runtime::url::Url) -> Self {
+    fn new(_uri: hsr::url::Url) -> Self {
         Api {
             database: lock::Mutex::new(vec![]),
         }
