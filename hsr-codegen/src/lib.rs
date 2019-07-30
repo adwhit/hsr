@@ -151,6 +151,15 @@ enum Method {
     Post(Option<Type>),
 }
 
+impl Method {
+    fn as_const(&self) -> QIdent {
+        match self {
+            Method::Get => ident("GET"),
+            Method::Post(_) => ident("POST")
+        }
+    }
+}
+
 impl fmt::Display for Method {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -371,7 +380,7 @@ impl Route {
     }
 
     fn build_path_template(&self) -> String {
-        let mut path = "/".to_string();
+        let mut path = "{}/".to_string();
         for segment in &self.path_segments {
             match segment {
                 PathSegment::Literal(p) => {
@@ -401,22 +410,24 @@ impl Route {
             .iter()
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
-        let body_arg = match self.method {
-            Method::Get | Method::Post(None) => None,
+        let (body_arg, request_body) = match self.method {
+            Method::Get => (None, None),
+            Method::Post(None) => (None, None),
             Method::Post(Some(ref body_ty)) => {
-                let name = if let TypeInner::Named(typename) = &body_ty.typ {
-                    ident(typename.to_string().to_snake_case())
-                } else {
-                    ident("payload")
-                };
-                Some(quote! { #name: #body_ty, })
+                (
+                    Some(quote! { payload: #body_ty, }),
+                    Some(quote! { self.inner })
+                )
             }
         };
+        let method = self.method.as_const();
         let path_template = self.build_path_template();
         quote! {
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty> {
-                let path = format!(#path_template, #(#path_names,)*);
-                unimplemented!()
+                let path = format!(#path_template, self.host, #(#path_names,)*);
+                self.inner
+                    .request(Method::#method, path)
+                    .send()
             }
         }
     }
@@ -1118,6 +1129,7 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     quote! {
         pub mod client {
             use super::*;
+            use hsr_runtime::actix_http::http::Method;
             use hsr_runtime::awc::Client as ActixClient;
             use hsr_runtime::ClientError;
 

@@ -12,3 +12,6 @@ hsr-runtime = { path = "../hsr-runtime" }
 serde = { version = "1.0.98", features = ['derive'] }
 regex = "1.2.0"
 rand = "0.7.0"
+
+[features]
+rustfmt = ["hsr-codegen/rustfmt"]
