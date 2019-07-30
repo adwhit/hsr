@@ -1,4 +1,4 @@
-use example_api::{Api, server};
+use petstore::{Api, server};
 
 // Serve the API.
 //

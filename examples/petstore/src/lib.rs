@@ -7,14 +7,14 @@ use hsr::futures3::{
 use hsr::LocalBoxFuture3;
 use regex::Regex;
 
-pub mod pet_api {
+pub mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
 
-use pet_api::{
-    CreatePetError, Error, GetAllPetsError, GetPetError, Pet, Pets, PetstoreApi,
+use api::{
+    CreatePetError, Error, GetAllPetsError, GetPetError,
 };
-pub use pet_api::{client, server, NewPet};
+pub use api::{client, server, Pet, Pets, NewPet, PetstoreApi};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {

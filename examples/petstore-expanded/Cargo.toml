@@ -1,14 +1,14 @@
 [package]
-name = "example-api"
+name = "petstore-expanded"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
 [build-dependencies]
-hsr-codegen = { path = "../hsr-codegen" }
+hsr-codegen = { path = "../../hsr-codegen" }
 
 [dependencies]
-hsr = { path = "../hsr" }
+hsr = { path = "../../hsr" }
 serde = { version = "1.0.98", features = ['derive'] }
 regex = "1.2.0"
 rand = "0.7.0"

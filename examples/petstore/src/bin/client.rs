@@ -1,6 +1,6 @@
 #![feature(async_await)]
 
-use example_api::{NewPet, pet_api::PetstoreApi, client::Client};
+use petstore::{NewPet, api::PetstoreApi, client::Client};
 use hsr::futures3::{FutureExt, TryFutureExt};
 
 // Run the client via a CLI

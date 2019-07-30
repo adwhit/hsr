@@ -1,6 +1,7 @@
 [workspace]
 members = [
-  "example-api",
+  "hsr",
   "hsr-codegen",
-  "hsr"
+  "examples/petstore",
+  "examples/petstore-expanded",
 ]
