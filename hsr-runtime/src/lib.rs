@@ -5,6 +5,7 @@ pub use awc;
 pub use futures1;
 pub use futures3;
 pub use serde;
+pub use serde_urlencoded;
 pub use url;
 
 // We re-export this type as it is used in all the trait functions

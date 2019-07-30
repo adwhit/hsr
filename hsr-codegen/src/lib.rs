@@ -402,6 +402,46 @@ impl Route {
         let (ok_code, ok_ty) = &self.return_ty;
         let result_ty = &self.return_ty();
 
+        let paths: Vec<_> = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| quote! { #id: #ty })
+            .collect();
+        let path_names = self.path_args.iter().map(|(id, _ty)| id);
+        let path_template = self.build_path_template();
+
+        let queries: Vec<_> = self
+            .query_args
+            .iter()
+            .map(|(id, ty)| quote! { #id: #ty })
+            .collect();
+
+        let add_query_string_to_url = self.generate_query_type_name().map(|typ| {
+            let fields = self.query_args
+                .iter()
+                .map(|(id, _)| id);
+            quote! {
+                {
+                    let qstyp = #typ {
+                        #(#fields,)*
+                    };
+                    let qs = serde_urlencoded::to_string(qstyp).unwrap();
+                    url.set_query(Some(&qs));
+                }
+            }
+        });
+
+        let (body_arg, send_request) = match self.method {
+            Method::Get | Method::Post(None) => (None, quote!{.send()}),
+            Method::Post(Some(ref body_ty)) => {
+                (
+                    Some(quote! { payload: #body_ty, }),
+                    quote! { .send_json(&payload) }
+                )
+            }
+        };
+        let method = self.method.as_const();
+
         let ok_match_arm = {
             let code = proc_macro2::Literal::u16_unsuffixed(ok_code.as_u16());
             if let Some(ok_ty) = ok_ty {
@@ -427,39 +467,16 @@ impl Route {
             }
         };
 
-        let paths: Vec<_> = self
-            .path_args
-            .iter()
-            .map(|(id, ty)| quote! { #id: #ty })
-            .collect();
-        let path_names = self.path_args.iter().map(|(id, _ty)| id);
-        let path_template = self.build_path_template();
-
-        let queries: Vec<_> = self
-            .query_args
-            .iter()
-            .map(|(id, ty)| quote! { #id: #ty })
-            .collect();
-
-        let (body_arg, send_request) = match self.method {
-            Method::Get | Method::Post(None) => (None, quote!{.send()}),
-            Method::Post(Some(ref body_ty)) => {
-                (
-                    Some(quote! { payload: #body_ty, }),
-                    quote! { .send_json(&payload) }
-                )
-            }
-        };
-        let method = self.method.as_const();
-
         quote! {
             #[allow(unused_mut)]
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
-                // Build up our request
+                // Build up our request path
                 let path = format!(#path_template, #(#path_names,)*);
-                let path = self.domain.join(&path).unwrap();
+                let mut url = self.domain.join(&path).unwrap();
+                #add_query_string_to_url
+
                 self.inner
-                    .request(Method::#method, path.as_str())
+                    .request(Method::#method, url.as_str())
                     // Send, giving a future1 contained an HttpResponse
                     #send_request
                     .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
@@ -1185,6 +1202,7 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
             use hsr_runtime::ClientError;
             use hsr_runtime::futures1::future::{err as fut_err, ok as fut_ok};
             use hsr_runtime::futures3::compat::Future01CompatExt;
+            use hsr_runtime::serde_urlencoded;
 
             pub struct Client {
                 domain: Url,
