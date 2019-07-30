@@ -5,7 +5,7 @@ pub use awc;
 pub use futures1;
 pub use futures3;
 pub use serde;
-pub use actix_http::http::Uri;
+pub use url;
 
 // We re-export this type as it is used in all the trait functions
 pub use futures3_core::future::{LocalBoxFuture as LocalBoxFuture3};

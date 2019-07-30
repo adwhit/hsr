@@ -16,12 +16,25 @@ fn dbg(v: impl std::fmt::Debug) -> String {
 }
 
 async fn run(client: &Client) -> Result<(), String> {
-    let pet = NewPet {
+    // Create two pets
+    let pet1 = NewPet {
         name: "Alex the Goat".into(),
         tag: None
     };
-    let () = client.create_pet(pet).map_err(dbg).await?;
-    let pet = client.get_pet(1).map_err(dbg).await?;
+    let pet2 = NewPet {
+        name: "Bob the Badger".into(),
+        tag: None
+    };
+    let () = client.create_pet(pet1).map_err(dbg).await?;
+    let () = client.create_pet(pet2).map_err(dbg).await?;
+
+    // Fetch a pet
+    let pet = client.get_pet(0).map_err(dbg).await?;
     println!("{:?}", pet);
+
+    // Fetch all pets
+    let pets = client.get_all_pets(10, None).map_err(dbg).await?;
+    println!("{:?}", pets);
+
     Ok(())
 }

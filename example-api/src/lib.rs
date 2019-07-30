@@ -49,7 +49,7 @@ pub struct Api {
 // We simulate some kind of database interactions
 impl Api {
     async fn connect_db(&self) -> ApiResult<lock::MutexGuard<Vec<Pet>>> {
-        if rand::random::<f32>() > 0.8 {
+        if rand::random::<f32>() > 0.95 {
             Err(InternalError::BadConnection)
         } else {
             Ok(self.database.lock().await)
@@ -93,7 +93,7 @@ impl Api {
 impl PetstoreApi for Api {
     type Error = InternalError;
 
-    fn new(_uri: hsr_runtime::Uri) -> Self {
+    fn new(_uri: hsr_runtime::url::Url) -> Self {
         Api {
             database: lock::Mutex::new(vec![]),
         }
