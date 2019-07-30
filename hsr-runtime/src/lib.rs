@@ -6,7 +6,11 @@ pub use futures3;
 pub use serde;
 pub use actix_http::http::Uri;
 
-use actix_web::{Either, HttpRequest, HttpResponse, Responder};
+// We re-export this type as it is used in all the trait functions
+pub use futures3_core::future::{LocalBoxFuture as LocalBoxFuture3};
+
+use actix_web::{Either, HttpRequest, HttpResponse, Responder, Error as AxError};
+use actix_http::http::StatusCode;
 use std::fmt;
 
 #[doc(hidden)]
@@ -38,8 +42,8 @@ impl actix_web::ResponseError for Void {}
 /// Associate an http status code with a type. Defaults to 501 Internal Server Error
 pub trait HasStatusCode {
     /// The http status code associated with the type
-    fn status_code(&self) -> actix_web::http::StatusCode {
-        actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
+    fn status_code(&self) -> StatusCode {
+        StatusCode::INTERNAL_SERVER_ERROR
     }
 }
 
@@ -52,7 +56,10 @@ pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
 
 pub trait Error: HasStatusCode {}
 
-pub struct ClientError;
+pub enum ClientError {
+    BadStatus(StatusCode),
+    Actix(AxError)
+}
 
 impl HasStatusCode for ClientError {}
 impl Error for ClientError {}

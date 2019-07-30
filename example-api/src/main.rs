@@ -1,9 +1,10 @@
 #![feature(async_await)]
 
 use hsr_runtime::futures3::{
-    future::{BoxFuture, FutureExt},
+    future::{FutureExt},
     lock,
 };
+use hsr_runtime::LocalBoxFuture3;
 use regex::Regex;
 
 pub mod pet_api {
@@ -102,7 +103,7 @@ impl PetstoreApi for Api {
         &self,
         limit: i64,
         filter: Option<String>,
-    ) -> BoxFuture<Result<Pets, GetAllPetsError<Self::Error>>> {
+    ) -> LocalBoxFuture3<Result<Pets, GetAllPetsError<Self::Error>>> {
         async move {
             let regex = if let Some(filter) = filter {
                 Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
@@ -119,7 +120,7 @@ impl PetstoreApi for Api {
             .boxed()
     }
 
-    fn create_pet(&self, new_pet: NewPet) -> BoxFuture<Result<(), CreatePetError<Self::Error>>> {
+    fn create_pet(&self, new_pet: NewPet) -> LocalBoxFuture3<Result<(), CreatePetError<Self::Error>>> {
         async move {
             let () = self.server_health_check()?;
             let _ = self.add_pet(new_pet).await?; // TODO return usize
@@ -128,7 +129,7 @@ impl PetstoreApi for Api {
             .boxed()
     }
 
-    fn get_pet(&self, pet_id: i64) -> BoxFuture<Result<Pet, GetPetError<Self::Error>>> {
+    fn get_pet(&self, pet_id: i64) -> LocalBoxFuture3<Result<Pet, GetPetError<Self::Error>>> {
         // TODO This is how we would like it to work
         async move {
             self.lookup_pet(pet_id as usize)

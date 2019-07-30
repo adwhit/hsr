@@ -375,7 +375,7 @@ impl Route {
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#return_ty>;
         }
     }
 
@@ -398,18 +398,46 @@ impl Route {
 
     fn generate_client_impl(&self) -> TokenStream {
         let opid = &self.operation_id;
-        let return_ty = self.return_ty();
+        let err_ty = &self.return_err_ty();
+        let (ok_code, ok_ty) = &self.return_ty;
+        let result_ty = &self.return_ty();
+
+        let ok_match_arm = {
+            let code = proc_macro2::Literal::u16_unsuffixed(ok_code.as_u16());
+            if let Some(ok_ty) = ok_ty {
+                // We will return some deserialized JSON
+                quote! {
+                    #code => {
+                        let fut = resp
+                            .json::<#ok_ty>()
+                            .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())));
+                        FutEither::A(fut)
+                    }
+                }
+            } else {
+                quote! {
+                    #code => {
+                        let fut = fut_ok(());
+                        FutEither::B(fut)
+                    }
+                }
+            }
+        };
+
         let paths: Vec<_> = self
             .path_args
             .iter()
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
         let path_names = self.path_args.iter().map(|(id, _ty)| id);
+        let path_template = self.build_path_template();
+
         let queries: Vec<_> = self
             .query_args
             .iter()
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
+
         let (body_arg, request_body) = match self.method {
             Method::Get => (None, None),
             Method::Post(None) => (None, None),
@@ -421,13 +449,26 @@ impl Route {
             }
         };
         let method = self.method.as_const();
-        let path_template = self.build_path_template();
+
         quote! {
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> BoxFuture3<#return_ty> {
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
+                // Build up our request
                 let path = format!(#path_template, self.host, #(#path_names,)*);
                 self.inner
                     .request(Method::#method, path)
+                    // Send, giving a future1 contained an HttpResponse
                     .send()
+                    .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
+                    .and_then(|resp| {
+                        // We match on the status type to handle the return correctly
+                        match resp.status().as_u16() {
+                            #ok_match_arm
+                            // TODO 400 => fut_err(GetPetError::NotFound).boxed_local(),
+                            v => FutEither::B(fut_err(#err_ty::Error(ClientError::BadStatus(resp.status()))))
+                        }
+                    })
+                    .compat()
+                    .boxed_local()
             }
         }
     }
@@ -470,12 +511,12 @@ impl Route {
             pub enum #name<E: HsrError> {
                 #(#variants,)*
                 #mb_default_variant
-                Internal(E)
+                Error(E)
             }
 
             impl<E: HsrError> From<E> for #name<E> {
                 fn from(e: E) -> Self {
-                    Self::Internal(e)
+                    Self::Error(e)
                 }
             }
 
@@ -485,7 +526,7 @@ impl Route {
                     match self {
                         #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
                         #mb_default_status
-                        Internal(e) => e.status_code()
+                        Error(e) => e.status_code()
                     }
                 }
             }
@@ -559,7 +600,7 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future1<Item = Either<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Error = Void> {
+            ) -> impl Future1<Item = AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Error = Void> {
                 // call our API handler function with requisite arguments, returning a Future3
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
@@ -570,17 +611,17 @@ impl Route {
                         #(#query_keys,)*
                         #body_into
                     )
-                    .await;
+                        .await;
                     let out = out
                     // wrap returnval in AxJson, if necessary
-                    #maybe_wrap_return_val
+                        #maybe_wrap_return_val
                     // give outcome a status code (simple way of overriding the Responder return type)
                     .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
-                     Result::<_, Void>::Ok(hsr_runtime::result_to_either(out))
+                    Result::<_, Void>::Ok(hsr_runtime::result_to_either(out))
                 }
                 // turn it into a Future1
-                .boxed()
-                .compat()
+                .boxed_local()
+                    .compat()
             }
         };
         code
@@ -832,7 +873,7 @@ struct TypeWithMeta<T> {
     typ: T
 }
 
-impl TypeWithMeta<Either<Struct, TypeInner>> {
+impl StructOrType {
     fn discard_struct(self) -> Result<Type> {
         match self.typ {
             Either::Right(typ) => Ok(TypeWithMeta { meta: self.meta, typ }),
@@ -1132,6 +1173,8 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
             use hsr_runtime::actix_http::http::Method;
             use hsr_runtime::awc::Client as ActixClient;
             use hsr_runtime::ClientError;
+            use hsr_runtime::futures1::future::{err as fut_err, ok as fut_ok};
+            use hsr_runtime::futures3::compat::Future01CompatExt;
 
             pub struct Client {
                 host: Uri,
@@ -1192,12 +1235,13 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         // TODO is there a way to re-export the serde derive macros?
         use hsr_runtime::{Void, Error as HsrError, HasStatusCode};
         use hsr_runtime::actix_web::{
-            self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either,
+            self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
         };
         use hsr_runtime::actix_http::http::{Uri, StatusCode};
-        use hsr_runtime::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};
-        use hsr_runtime::futures1::Future as Future1;
+        use hsr_runtime::futures3::future::{FutureExt, TryFutureExt};
+        use hsr_runtime::LocalBoxFuture3;
+        use hsr_runtime::futures1::{Future as Future1, future::Either as FutEither};
 
         // TypeInner definitions
         #rust_component_types
