@@ -1,5 +1,6 @@
 pub use actix_web;
 pub use actix_http;
+pub use actix_rt;
 pub use awc;
 pub use futures1;
 pub use futures3;
@@ -56,6 +57,7 @@ pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
 
 pub trait Error: HasStatusCode {}
 
+#[derive(Debug)]
 pub enum ClientError {
     BadStatus(StatusCode),
     Actix(AxError)

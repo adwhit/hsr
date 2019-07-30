@@ -12,9 +12,9 @@ pub mod pet_api {
 }
 
 use pet_api::{
-    CreatePetError, Error, GetAllPetsError, GetPetError, NewPet, Pet, Pets, PetstoreApi,
+    CreatePetError, Error, GetAllPetsError, GetPetError, Pet, Pets, PetstoreApi,
 };
-pub use pet_api::{client, server};
+pub use pet_api::{client, server, NewPet};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {

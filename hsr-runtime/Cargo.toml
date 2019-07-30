@@ -12,3 +12,4 @@ serde = { version = "1.0.98", features = ["derive"] }
 actix-web = "1.0.5"
 actix-http = "0.2.7"
 awc = "0.2.2"
+actix-rt = "0.2.4"

@@ -380,15 +380,15 @@ impl Route {
     }
 
     fn build_path_template(&self) -> String {
-        let mut path = "{}/".to_string();
+        let mut path = "{}".to_string();
         for segment in &self.path_segments {
             match segment {
                 PathSegment::Literal(p) => {
-                    path.push_str(&p);
                     path.push('/');
+                    path.push_str(&p);
                 }
                 PathSegment::Parameter(_) => {
-                    path.push_str("{}/");
+                    path.push_str("/{}");
                 }
             }
         }
@@ -456,7 +456,7 @@ impl Route {
             #[allow(unused_mut)]
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
                 // Build up our request
-                let path = format!(#path_template, self.host, #(#path_names,)*);
+                let path = format!(#path_template, self.domain, #(#path_names,)*);
                 self.inner
                     .request(Method::#method, path)
                     // Send, giving a future1 contained an HttpResponse
@@ -466,7 +466,7 @@ impl Route {
                         // We match on the status type to handle the return correctly
                         match resp.status().as_u16() {
                             #ok_match_arm
-                            // TODO 400 => fut_err(GetPetError::NotFound).boxed_local(),
+                            // TODO 404 => fut_err(GetPetError::NotFound).boxed_local(),
                             _ => {
                                 let fut = fut_err(#err_ty::Error(ClientError::BadStatus(resp.status())));
                                 let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
@@ -1141,6 +1141,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
                 HttpServer::new(move || {
                     App::new()
                         .register_data(api.clone())
+                        .wrap(Logger::default())
                     // TODO make these routes configurable
                     // Add route serving up the json spec
                         .route("/spec.json", web::get().to(|| {
@@ -1185,15 +1186,15 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
             use hsr_runtime::futures3::compat::Future01CompatExt;
 
             pub struct Client {
-                host: Uri,
+                domain: Uri,
                 inner: ActixClient,
             }
 
             impl #trait_name for Client {
                 type Error = ClientError;
-                fn new(host: Uri) -> Self {
+                fn new(domain: Uri) -> Self {
                     Client {
-                        host: host,
+                        domain: domain,
                         inner: ActixClient::new()
                     }
                 }
@@ -1245,6 +1246,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         use hsr_runtime::actix_web::{
             self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
             web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
+            middleware::Logger
         };
         use hsr_runtime::actix_http::http::{Uri, StatusCode};
         use hsr_runtime::futures3::future::{FutureExt, TryFutureExt};
