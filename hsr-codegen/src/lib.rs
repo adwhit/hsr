@@ -411,14 +411,17 @@ impl Route {
                         let fut = resp
                             .json::<#ok_ty>()
                             .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())));
-                        FutEither::A(fut)
+                        // Cast to a boxed future
+                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        fut
                     }
                 }
             } else {
                 quote! {
                     #code => {
                         let fut = fut_ok(());
-                        FutEither::B(fut)
+                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        fut
                     }
                 }
             }
@@ -459,12 +462,16 @@ impl Route {
                     // Send, giving a future1 contained an HttpResponse
                     .send()
                     .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
-                    .and_then(|resp| {
+                    .and_then(|mut resp| {
                         // We match on the status type to handle the return correctly
                         match resp.status().as_u16() {
                             #ok_match_arm
                             // TODO 400 => fut_err(GetPetError::NotFound).boxed_local(),
-                            v => FutEither::B(fut_err(#err_ty::Error(ClientError::BadStatus(resp.status()))))
+                            _ => {
+                                let fut = fut_err(#err_ty::Error(ClientError::BadStatus(resp.status())));
+                                let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                                fut
+                            }
                         }
                     })
                     .compat()
