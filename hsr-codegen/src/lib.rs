@@ -713,13 +713,6 @@ fn get_type_from_response(
     }
 }
 
-fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
-    code
-        .canonical_reason()
-        .and_then(|reason| TypeName::new(reason.to_camel_case()).ok())
-        .unwrap_or(TypeName::new(format!("E{}", code.as_str())).unwrap())
-}
-
 /// A string which is a valid identifier (snake_case)
 ///
 /// Do not construct directly, instead use `new`
@@ -863,72 +856,6 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     Ok(routes)
 }
 
-/// Generate code that defines a `struct` or `type` alias for each object described
-/// in the OpenAPI 'components' section.
-fn generate_rust_component_types(typs: &TypeMap<TypeWithMeta<Either<Struct, TypeInner>>>) -> TokenStream {
-    let mut tokens = TokenStream::new();
-    for (typename, typ) in typs {
-        let descr = typ.meta.description.as_ref().map(|s| s.as_str());
-        let def = match &typ.typ {
-            Either::Left(strukt) => generate_struct_def(typename, descr, strukt, Visibility::Public),
-            Either::Right(typ) => {
-                let descr = descr.map(doc_comment);
-                // make a type alias
-                quote! {
-                    #descr
-                    pub type #typename = #typ;
-                }
-            }
-        };
-        tokens.extend(def);
-    }
-    tokens
-}
-
-fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
-    let mut tokens = TokenStream::new();
-    for (_path, routes) in routemap {
-        for route in routes {
-            // Construct the error type, if necessary
-            let mb_enum_def = route.generate_error_enum_def();
-            tokens.extend(mb_enum_def);
-            // construct the query type, if necessary
-            let mb_query_ty = route.generate_query_type();
-            tokens.extend(mb_query_ty)
-        }
-    }
-    tokens
-}
-
-fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &TypeName) -> TokenStream {
-    let mut methods = TokenStream::new();
-    let descr = doc_comment(format!("Api generated from '{}' spec", title));
-    for (_, route_methods) in routes {
-        for route in route_methods {
-            methods.extend(route.generate_signature());
-        }
-    }
-    quote! {
-        #descr
-        pub trait #trait_name: 'static {
-            type Error: HsrError;
-            fn new(host: Url) -> Self;
-
-            #methods
-        }
-    }
-}
-
-fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
-    let mut dispatchers = TokenStream::new();
-    for (_, route_methods) in routes {
-        for route in route_methods {
-            dispatchers.extend(route.generate_dispatcher(trait_name));
-        }
-    }
-    quote! {#dispatchers}
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct TypeWithMeta<T> {
     meta: SchemaData,
@@ -974,6 +901,36 @@ impl TypeInner {
             meta,
             typ: Either::Right(self)
         }
+    }
+}
+
+impl quote::ToTokens for Type {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.typ.to_tokens(tokens)
+    }
+}
+
+impl quote::ToTokens for TypeInner {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        use TypeInner::*;
+        let toks = match self {
+            String => quote! { String },
+            F64 => quote! { f64 },
+            I64 => quote! { i64 },
+            Bool => quote! { bool },
+            Array(inner) => {
+                quote! { Vec<#inner> }
+            }
+            Option(inner) => {
+                quote! { Option<#inner> }
+            }
+            Named(name) => {
+                quote! { #name }
+            }
+            // TODO handle Any properly
+            Any => todo!(),
+        };
+        toks.to_tokens(tokens);
     }
 }
 
@@ -1046,10 +1003,23 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
+fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
+    code
+        .canonical_reason()
+        .and_then(|reason| TypeName::new(reason.to_camel_case()).ok())
+        .unwrap_or(TypeName::new(format!("E{}", code.as_str())).unwrap())
+}
+
 fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
     let msg = msg.as_ref();
     quote! {
         #[doc = #msg]
+    }
+}
+
+fn get_derive_tokens() -> TokenStream {
+    quote! {
+        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     }
 }
 
@@ -1068,6 +1038,72 @@ impl quote::ToTokens for Visibility {
             Visibility::Private => (),
         }
     }
+}
+
+/// Generate code that defines a `struct` or `type` alias for each object described
+/// in the OpenAPI 'components' section.
+fn generate_rust_component_types(typs: &TypeMap<TypeWithMeta<Either<Struct, TypeInner>>>) -> TokenStream {
+    let mut tokens = TokenStream::new();
+    for (typename, typ) in typs {
+        let descr = typ.meta.description.as_ref().map(|s| s.as_str());
+        let def = match &typ.typ {
+            Either::Left(strukt) => generate_struct_def(typename, descr, strukt, Visibility::Public),
+            Either::Right(typ) => {
+                let descr = descr.map(doc_comment);
+                // make a type alias
+                quote! {
+                    #descr
+                    pub type #typename = #typ;
+                }
+            }
+        };
+        tokens.extend(def);
+    }
+    tokens
+}
+
+fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
+    let mut tokens = TokenStream::new();
+    for (_path, routes) in routemap {
+        for route in routes {
+            // Construct the error type, if necessary
+            let mb_enum_def = route.generate_error_enum_def();
+            tokens.extend(mb_enum_def);
+            // construct the query type, if necessary
+            let mb_query_ty = route.generate_query_type();
+            tokens.extend(mb_query_ty)
+        }
+    }
+    tokens
+}
+
+fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &TypeName) -> TokenStream {
+    let mut methods = TokenStream::new();
+    let descr = doc_comment(format!("Api generated from '{}' spec", title));
+    for (_, route_methods) in routes {
+        for route in route_methods {
+            methods.extend(route.generate_signature());
+        }
+    }
+    quote! {
+        #descr
+        pub trait #trait_name: 'static {
+            type Error: HsrError;
+            fn new(host: Url) -> Self;
+
+            #methods
+        }
+    }
+}
+
+fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+    let mut dispatchers = TokenStream::new();
+    for (_, route_methods) in routes {
+        for route in route_methods {
+            dispatchers.extend(route.generate_dispatcher(trait_name));
+        }
+    }
+    quote! {#dispatchers}
 }
 
 fn generate_struct_def(name: &TypeName, descr: Option<&str>, Struct { fields }: &Struct, vis: Visibility) -> TokenStream {
@@ -1090,42 +1126,6 @@ fn generate_struct_def(name: &TypeName, descr: Option<&str>, Struct { fields }: 
         }
     };
     toks
-}
-
-fn get_derive_tokens() -> TokenStream {
-    quote! {
-        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-    }
-}
-
-impl quote::ToTokens for Type {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.typ.to_tokens(tokens)
-    }
-}
-
-impl quote::ToTokens for TypeInner {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        use TypeInner::*;
-        let toks = match self {
-            String => quote! { String },
-            F64 => quote! { f64 },
-            I64 => quote! { i64 },
-            Bool => quote! { bool },
-            Array(inner) => {
-                quote! { Vec<#inner> }
-            }
-            Option(inner) => {
-                quote! { Option<#inner> }
-            }
-            Named(name) => {
-                quote! { #name }
-            }
-            // TODO handle Any properly
-            Any => todo!(),
-        };
-        toks.to_tokens(tokens);
-    }
 }
 
 // TODO this probably doesn't need to accept the whole API object
