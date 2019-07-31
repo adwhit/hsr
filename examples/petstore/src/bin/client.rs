@@ -37,6 +37,7 @@ async fn run(client: &Client) -> Result<(), String> {
     println!("Got pets: {:?}", pets);
 
     // Fetch a pet that doesn't exist
+    // Note the custom return error
     if let Err(GetPetError::NotFound) = client.get_pet(500).await {
         ()
     } else {
