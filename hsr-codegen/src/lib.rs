@@ -441,6 +441,35 @@ impl Route {
         };
         let method = self.method.as_const();
 
+        fn err_match_arm(code: &StatusCode, err_ty: &TypeName, err_ty_variant: &TypeName, err_ty_ty: &Option<Type>) -> TokenStream {
+            let code = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
+            if let Some(err_ty_ty) = err_ty_ty {
+                // We will return some deserialized JSON
+                quote! {
+                    #code => {
+                        let fut = resp
+                            .json::<#err_ty_ty>()
+                            .then(|res| match res {
+                                Ok(json) => Err(#err_ty::#err_ty_variant(json)),
+                                Err(e) => Err(#err_ty::Error(ClientError::Actix(e.into())))
+                            });
+                        // Cast to a boxed future
+                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        fut
+                    }
+                }
+            } else {
+                // Fieldless variant
+                quote! {
+                    #code => {
+                        let fut = fut_err(#err_ty::#err_ty_variant);
+                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        fut
+                    }
+                }
+            }
+        }
+
         let ok_match_arm = {
             let code = proc_macro2::Literal::u16_unsuffixed(ok_code.as_u16());
             if let Some(ok_ty) = ok_ty {
@@ -466,6 +495,11 @@ impl Route {
             }
         };
 
+        let err_match_arms = self.err_tys.iter().map(|(status, mb_ty)| {
+            let variant_name = error_variant_from_status_code(&status);
+            err_match_arm(status, err_ty, &variant_name, mb_ty)
+        });
+
         quote! {
             #[allow(unused_mut)]
             fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
@@ -483,7 +517,7 @@ impl Route {
                         // We match on the status type to handle the return correctly
                         match resp.status().as_u16() {
                             #ok_match_arm
-                            // TODO 404 => fut_err(GetPetError::NotFound).boxed_local(),
+                            #(#err_match_arms)*
                             _ => {
                                 let fut = fut_err(#err_ty::Error(ClientError::BadStatus(resp.status())));
                                 let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
@@ -506,10 +540,7 @@ impl Route {
         let mut status_codes = vec![];
         for (code, mb_ty) in &self.err_tys {
             status_codes.push(code.as_u16());
-            let variant_name = code
-                .canonical_reason()
-                .map(|reason| ident(reason.to_camel_case()))
-                .unwrap_or(ident(format!("E{}", code.as_str())));
+            let variant_name = error_variant_from_status_code(&code);
             match mb_ty.as_ref() {
                 Some(ty) => {
                     variants.push(quote! { #variant_name(#ty) });
@@ -680,6 +711,13 @@ fn get_type_from_response(
             build_type(&ref_or_schema, api).and_then(|s| s.discard_struct())?,
         ))
     }
+}
+
+fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
+    code
+        .canonical_reason()
+        .and_then(|reason| TypeName::new(reason.to_camel_case()).ok())
+        .unwrap_or(TypeName::new(format!("E{}", code.as_str())).unwrap())
 }
 
 /// A string which is a valid identifier (snake_case)

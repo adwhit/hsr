@@ -1,6 +1,6 @@
 #![feature(async_await)]
 
-use petstore::{NewPet, api::PetstoreApi, client::Client};
+use petstore::{NewPet, PetstoreApi, client::Client, api::GetPetError};
 use hsr::futures3::{FutureExt, TryFutureExt};
 
 // Run the client via a CLI
@@ -30,11 +30,18 @@ async fn run(client: &Client) -> Result<(), String> {
 
     // Fetch a pet
     let pet = client.get_pet(0).map_err(dbg).await?;
-    println!("{:?}", pet);
+    println!("Got pet: {:?}", pet);
 
     // Fetch all pets
     let pets = client.get_all_pets(10, None).map_err(dbg).await?;
-    println!("{:?}", pets);
+    println!("Got pets: {:?}", pets);
+
+    // Fetch a pet that doesn't exist
+    if let Err(GetPetError::NotFound) = client.get_pet(500).await {
+        ()
+    } else {
+        panic!("Not not found")
+    };
 
     Ok(())
 }
