@@ -64,6 +64,8 @@ pub enum Error {
     BadCodegen,
     #[fail(display = "status code '{}' not supported", _0)]
     BadStatusCode(ApiStatusCode),
+    #[fail(display = "Duplicate name: {}", _0)]
+    DuplicateName(String)
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -1129,7 +1131,7 @@ fn generate_struct_def(name: &TypeName, descr: Option<&str>, Struct { fields }: 
 }
 
 // TODO this probably doesn't need to accept the whole API object
-fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<TypeWithMeta<Either<Struct, TypeInner>>> {
+fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<StructOrType> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
             let (name, meta) = validate_schema_ref(reference, api, 0)?;
@@ -1146,6 +1148,10 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
             } else {
                 return Struct::from_objlike(obj, api).map(|s| s.with_meta_either(meta))
             }
+        }
+        SchemaKind::AllOf { all_of: schemas } => {
+            let allof_types = schemas.iter().map(|schema| build_type(schema, api)).collect::<Result<Vec<_>>>()?;
+            return combine_types(&allof_types).map(|s| s.with_meta_either(meta))
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -1166,6 +1172,23 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Type
         }
     };
     Ok(typ.with_meta_either(meta))
+}
+
+fn combine_types(types: &[StructOrType]) -> Result<Struct> {
+    let mut fields = IndexMap::new();
+    for typ in types {
+        let strukt = match &typ.typ {
+            Either::Left(strukt) => strukt,
+            Either::Right(_other) => return Err(Error::Todo("Only object-like types allowed in AllOf types".to_string()))
+        };
+        for field in &strukt.fields {
+            if let Some(_) = fields.insert(&field.name, field) {
+                return Err(Error::DuplicateName(field.name.to_string()))
+            }
+        }
+    }
+    let fields: Vec<_> = fields.values().cloned().cloned().collect();
+    Struct::new(fields)
 }
 
 fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
