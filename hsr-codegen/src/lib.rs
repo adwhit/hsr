@@ -891,9 +891,10 @@ enum TypeInner {
     F64,
     I64,
     Bool,
-    Array(Box<TypeWithMeta<Self>>),
-    Option(Box<TypeWithMeta<Self>>),
+    Array(Box<Type>),
+    Option(Box<Type>),
     Any,
+    AllOf(Vec<StructOrType>),
     Named(TypeName),
 }
 
@@ -931,6 +932,7 @@ impl quote::ToTokens for TypeInner {
             }
             // TODO handle Any properly
             Any => todo!(),
+            AllOf(_) => todo!(),
         };
         toks.to_tokens(tokens);
     }
@@ -1044,7 +1046,7 @@ impl quote::ToTokens for Visibility {
 
 /// Generate code that defines a `struct` or `type` alias for each object described
 /// in the OpenAPI 'components' section.
-fn generate_rust_component_types(typs: &TypeMap<TypeWithMeta<Either<Struct, TypeInner>>>) -> TokenStream {
+fn generate_rust_component_types(typs: &TypeMap<StructOrType>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (typename, typ) in typs {
         let descr = typ.meta.description.as_ref().map(|s| s.as_str());
@@ -1151,7 +1153,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Stru
         }
         SchemaKind::AllOf { all_of: schemas } => {
             let allof_types = schemas.iter().map(|schema| build_type(schema, api)).collect::<Result<Vec<_>>>()?;
-            return combine_types(&allof_types).map(|s| s.with_meta_either(meta))
+            return Ok(TypeInner::AllOf(allof_types).with_meta_either(meta))
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -1179,6 +1181,7 @@ fn combine_types(types: &[StructOrType]) -> Result<Struct> {
     for typ in types {
         let strukt = match &typ.typ {
             Either::Left(strukt) => strukt,
+            // FIXME problem - we can have a Type::Named which we need to dereference :/
             Either::Right(_other) => return Err(Error::Todo("Only object-like types allowed in AllOf types".to_string()))
         };
         for field in &strukt.fields {
