@@ -19,23 +19,23 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 
 ## Roadmap
 
-[x] HTTP server
-[x] HTTP client
-[x] Type-safe path/query/json handling
-[x] High performance
-[] HTTPS
-[] Benchmarks
-[] Return content-types other than JSON
-[] AnyOf/OneOf schema support
-[] Support all features necessary to get `petstore-expanded.yaml` working
-[] Support headers
-[] (Once the futures ecosystem has matured) - move away from futures v1
-[] Option to use existential types
-[] Advanced server configuration (with middleware etc)
-[] Even less boilerplate
-[] Works on stable Rust
-[] JSON schema
-[] Tutorial
+- [x] HTTP server
+- [x] HTTP client
+- [x] Type-safe path/query/json handling
+- [x] High performance
+- [ ] HTTPS
+- [ ] Benchmarks
+- [ ] Return content-types other than JSON
+- [ ] AnyOf/OneOf schema support
+- [ ] Support all features necessary to get `petstore-expanded.yaml` working
+- [ ] Support headers
+- [ ] (Once the futures ecosystem has matured) - move away from futures v1
+- [ ] Option to use existential types
+- [ ] Advanced server configuration (with middleware etc)
+- [ ] Even less boilerplate
+- [ ] Works on stable Rust
+- [ ] JSON schema
+- [ ] Tutorial
 
 ## FAQ
 
