@@ -1,23 +1,34 @@
 //! HSR runtime helpers and types
 
+#[macro_use]
+#[allow(unused_imports)]
+extern crate serde_derive;
+pub use serde_derive::{Deserialize, Serialize};
+
 // We have a tonne of public imports. We places them here and make them public
 // so that the user doesn't have to faff around adding them all and making sure
 // the versions are all compatible
-pub use actix_web;
 pub use actix_http;
 pub use actix_rt;
+pub use actix_web;
 pub use awc;
 pub use futures1;
 pub use futures3;
-pub use serde;
 pub use serde_urlencoded;
 pub use url;
 
-// We re-export this type as it is used in all the trait functions
-pub use futures3_core::future::{LocalBoxFuture as LocalBoxFuture3};
+pub use url::Url;
 
-use actix_web::{Either, HttpRequest, HttpResponse, Responder, Error as AxError};
+// We re-export this type as it is used in all the trait functions
+pub use futures3_core::future::LocalBoxFuture as HsrFuture;
+
+pub fn wrap<'a, T: 'a>(out: T) -> HsrFuture<'a, T> {
+    use futures3::FutureExt;
+    futures3::future::ready(out).boxed_local()
+}
+
 use actix_http::http::StatusCode;
+use actix_web::{Either, Error as AxError, HttpRequest, HttpResponse, Responder};
 use std::fmt;
 
 /// An empty type which cannot be instantiated.
@@ -68,8 +79,6 @@ pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
     }
 }
 
-pub trait Error: HasStatusCode {}
-
 /// Errors that may be returned by the client, apart from those explicitly
 /// specified in the spec.
 ///
@@ -78,8 +87,13 @@ pub trait Error: HasStatusCode {}
 #[derive(Debug)]
 pub enum ClientError {
     BadStatus(StatusCode),
-    Actix(AxError)
+    Actix(AxError),
 }
 
 impl HasStatusCode for ClientError {}
-impl Error for ClientError {}
+
+/// An opaque error that may be returned to deliver a 500 Internal Server Error
+#[derive(Debug, Clone, Copy)]
+pub struct ServerError;
+
+impl HasStatusCode for ServerError {}

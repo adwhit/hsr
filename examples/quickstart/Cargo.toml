@@ -1,5 +1,5 @@
 [package]
-name = "petstore-expanded"
+name = "quickstart"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
@@ -9,10 +9,4 @@ hsr-codegen = { path = "../../hsr-codegen" }
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = { version = "1.0.98", features = ['derive'] }
-regex = "1.2.1"
-rand = "0.7.0"
-env_logger = "0.6.2"
-
-[features]
-rustfmt = ["hsr-codegen/rustfmt"]
+serde = "1"

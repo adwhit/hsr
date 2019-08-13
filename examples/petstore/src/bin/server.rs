@@ -1,4 +1,4 @@
-use petstore::{Api, server};
+use petstore::{server, Api};
 
 // Serve the API.
 //

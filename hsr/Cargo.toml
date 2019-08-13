@@ -8,10 +8,10 @@ edition = "2018"
 futures1 = { package = "futures", version = "0.1.27" }
 futures3 = { package = "futures-preview", version = "0.3.0-alpha.17", features = ["compat"] }
 futures3_core = { package = "futures-core-preview", version = "0.3.0-alpha.17" }
-serde = { version = "1.0.98", features = ["derive"] }
 actix-web = "1.0.5"
-actix-http = "0.2.7"
-awc = "0.2.2"
+actix-http = "0.2.8"
+awc = "0.2.3"
 actix-rt = "0.2.4"
-url = "2.0.0"
-serde_urlencoded = "0.6.0"
+url = "2.1.0"
+serde_urlencoded = "0.6.1"
+serde_derive = "1"

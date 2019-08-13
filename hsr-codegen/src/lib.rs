@@ -12,8 +12,9 @@ use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
-use openapiv3::{AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaKind, Type as ApiType,
-                StatusCode as ApiStatusCode, SchemaData
+use openapiv3::{
+    AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaData, SchemaKind,
+    StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
@@ -39,6 +40,8 @@ pub enum Error {
     CodeGen,
     #[fail(display = "Bad reference: \"{}\"", _0)]
     BadReference(String),
+    #[fail(display = "Invalid schema: \"{}\"", _0)]
+    BadSchema(String),
     #[fail(display = "Unexpected reference: \"{}\"", _0)]
     UnexpectedReference(String),
     #[fail(display = "Schema not supported: {:?}", _0)]
@@ -64,7 +67,7 @@ pub enum Error {
     #[fail(display = "status code '{}' not supported", _0)]
     BadStatusCode(ApiStatusCode),
     #[fail(display = "Duplicate name: {}", _0)]
-    DuplicateName(String)
+    DuplicateName(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -91,10 +94,14 @@ fn dereference<'a, T>(
     }
 }
 
-fn validate_schema_ref<'a>(refr: &'a str, api: &'a OpenAPI, depth: u32) -> Result<(TypeName, SchemaData)> {
+fn validate_schema_ref<'a>(
+    refr: &'a str,
+    api: &'a OpenAPI,
+    depth: u32,
+) -> Result<(TypeName, SchemaData)> {
     if depth > 100 {
         // circular reference!!
-        return Err(Error::BadReference(refr.to_string()))
+        return Err(Error::BadReference(refr.to_string()));
     }
     let name = extract_ref_name(refr)?;
     // Do the lookup. We are just checking the ref points to 'something'
@@ -109,9 +116,7 @@ fn validate_schema_ref<'a>(refr: &'a str, api: &'a OpenAPI, depth: u32) -> Resul
             let (_, meta) = validate_schema_ref(reference, api, depth + 1)?;
             Ok((name, meta))
         }
-        ReferenceOr::Item(schema) => {
-            Ok((name, schema.schema_data.clone()))
-        }
+        ReferenceOr::Item(schema) => Ok((name, schema.schema_data.clone())),
     }
 }
 
@@ -155,7 +160,7 @@ impl Method {
     fn as_const(&self) -> QIdent {
         match self {
             Method::Get => ident("GET"),
-            Method::Post(_) => ident("POST")
+            Method::Post(_) => ident("POST"),
         }
     }
 }
@@ -195,6 +200,16 @@ impl Route {
         api: &OpenAPI,
     ) -> Result<Route> {
         let path_segments = analyse_path(path)?;
+        let expected_path_args: usize = path_segments
+            .iter()
+            .map(|p| {
+                if let PathSegment::Parameter(_) = p {
+                    1
+                } else {
+                    0
+                }
+            })
+            .sum();
         let operation_id = match operation_id {
             Some(ref op) => Ident::new(op),
             None => Err(Error::NoOperationId(path.into())),
@@ -242,6 +257,14 @@ impl Route {
                 _ => unimplemented!(),
             }
         }
+        if path_args.len() != expected_path_args {
+            return Err(Error::BadSchema(format!(
+                "path '{}' expected {} path parameter(s), found {}",
+                path,
+                expected_path_args,
+                path_args.len()
+            )));
+        }
 
         // Check responses are valid status codes
         // We only support 2XX (success) and 4XX (error) codes (but not ranges)
@@ -249,9 +272,10 @@ impl Route {
         let mut error_codes = vec![];
         for code in responses.responses.keys() {
             let status = match code {
-                ApiStatusCode::Code(v) => StatusCode::from_u16(*v)
-                    .map_err(|_| Error::BadStatusCode(code.clone())),
-                _ => return Err(Error::BadStatusCode(code.clone()))
+                ApiStatusCode::Code(v) => {
+                    StatusCode::from_u16(*v).map_err(|_| Error::BadStatusCode(code.clone()))
+                }
+                _ => return Err(Error::BadStatusCode(code.clone())),
             }?;
             if status.is_success() {
                 if success_code.replace(status).is_some() {
@@ -324,9 +348,17 @@ impl Route {
             })
             .collect();
         let name = self.generate_query_type_name()?;
-        let descr = format!("Type representing the query string of `{}`", self.operation_id);
+        let descr = format!(
+            "Type representing the query string of `{}`",
+            self.operation_id
+        );
         let def = Struct::new(fields).unwrap();
-        Some(generate_struct_def(&name, Some(descr.as_str()), &def, Visibility::Private))
+        Some(generate_struct_def(
+            &name,
+            Some(descr.as_str()),
+            &def,
+            Visibility::Private,
+        ))
     }
 
     /// Fetch the name of the return type identified as an error, if it exists.
@@ -375,7 +407,7 @@ impl Route {
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#return_ty>;
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> HsrFuture<#return_ty>;
         }
     }
 
@@ -394,7 +426,6 @@ impl Route {
         }
         path
     }
-
 
     fn generate_client_impl(&self) -> TokenStream {
         let opid = &self.operation_id;
@@ -417,9 +448,7 @@ impl Route {
             .collect();
 
         let add_query_string_to_url = self.generate_query_type_name().map(|typ| {
-            let fields = self.query_args
-                .iter()
-                .map(|(id, _)| id);
+            let fields = self.query_args.iter().map(|(id, _)| id);
             quote! {
                 {
                     let qstyp = #typ {
@@ -432,17 +461,20 @@ impl Route {
         });
 
         let (body_arg, send_request) = match self.method {
-            Method::Get | Method::Post(None) => (None, quote!{.send()}),
-            Method::Post(Some(ref body_ty)) => {
-                (
-                    Some(quote! { payload: #body_ty, }),
-                    quote! { .send_json(&payload) }
-                )
-            }
+            Method::Get | Method::Post(None) => (None, quote! {.send()}),
+            Method::Post(Some(ref body_ty)) => (
+                Some(quote! { payload: #body_ty, }),
+                quote! { .send_json(&payload) },
+            ),
         };
         let method = self.method.as_const();
 
-        fn err_match_arm(code: &StatusCode, err_ty: &TypeName, err_ty_variant: &TypeName, err_ty_ty: &Option<Type>) -> TokenStream {
+        fn err_match_arm(
+            code: &StatusCode,
+            err_ty: &TypeName,
+            err_ty_variant: &TypeName,
+            err_ty_ty: &Option<Type>,
+        ) -> TokenStream {
             let code = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
             if let Some(err_ty_ty) = err_ty_ty {
                 // We will return some deserialized JSON
@@ -503,7 +535,7 @@ impl Route {
 
         quote! {
             #[allow(unused_mut)]
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> LocalBoxFuture3<#result_ty> {
+            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> HsrFuture<#result_ty> {
                 // Build up our request path
                 let path = format!(#path_template, #(#path_names,)*);
                 let mut url = self.domain.join(&path).unwrap();
@@ -564,19 +596,19 @@ impl Route {
         let derives = get_derive_tokens();
         quote! {
             #derives
-            pub enum #name<E: HsrError> {
+            pub enum #name<E: HasStatusCode> {
                 #(#variants,)*
                 #mb_default_variant
                 Error(E)
             }
 
-            impl<E: HsrError> From<E> for #name<E> {
+            impl<E: HasStatusCode> From<E> for #name<E> {
                 fn from(e: E) -> Self {
                     Self::Error(e)
                 }
             }
 
-            impl<E: HsrError> HasStatusCode for #name<E> {
+            impl<E: HasStatusCode> HasStatusCode for #name<E> {
                 fn status_code(&self) -> StatusCode {
                     use #name::*;
                     match self {
@@ -587,7 +619,7 @@ impl Route {
                 }
             }
 
-            impl<E: HsrError> Responder for #name<E> {
+            impl<E: HasStatusCode> Responder for #name<E> {
                 type Error = Void;
                 type Future = Result<HttpResponse, Void>;
 
@@ -703,7 +735,9 @@ fn get_type_from_response(
             "content type must be 'application/json'".into(),
         ));
     } else {
-        let ref_or_schema = resp.content.get("application/json")
+        let ref_or_schema = resp
+            .content
+            .get("application/json")
             .unwrap()
             .schema
             .as_ref()
@@ -798,7 +832,6 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     Ok(segments)
 }
 
-
 fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
     debug!("Found paths: {:?}", api.paths.keys().collect::<Vec<_>>());
@@ -865,13 +898,16 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
 #[derive(Debug, Clone, PartialEq)]
 struct TypeWithMeta<T> {
     meta: SchemaData,
-    typ: T
+    typ: T,
 }
 
 impl StructOrType {
     fn discard_struct(self) -> Result<Type> {
         match self.typ {
-            Either::Right(typ) => Ok(TypeWithMeta { meta: self.meta, typ }),
+            Either::Right(typ) => Ok(TypeWithMeta {
+                meta: self.meta,
+                typ,
+            }),
             Either::Left(_) => return Err(Error::NotStructurallyTyped),
         }
     }
@@ -881,7 +917,7 @@ impl Type {
     fn to_option(self) -> Self {
         Self {
             meta: self.meta.clone(),
-            typ: TypeInner::Option(Box::new(self))
+            typ: TypeInner::Option(Box::new(self)),
         }
     }
 }
@@ -906,7 +942,7 @@ impl TypeInner {
     fn with_meta_either(self, meta: SchemaData) -> StructOrType {
         TypeWithMeta {
             meta,
-            typ: Either::Right(self)
+            typ: Either::Right(self),
         }
     }
 }
@@ -936,7 +972,7 @@ impl quote::ToTokens for TypeInner {
             }
             // TODO handle Any properly
             Any => unimplemented!(),
-            AllOf(_) => unimplemented!()
+            AllOf(_) => unimplemented!(),
         };
         toks.to_tokens(tokens);
     }
@@ -946,7 +982,7 @@ impl Struct {
     fn with_meta_either(self, meta: SchemaData) -> StructOrType {
         TypeWithMeta {
             meta,
-            typ: Either::Left(self)
+            typ: Either::Left(self),
         }
     }
 }
@@ -1012,8 +1048,7 @@ impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
 fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
-    code
-        .canonical_reason()
+    code.canonical_reason()
         .and_then(|reason| TypeName::new(reason.to_camel_case()).ok())
         .unwrap_or(TypeName::new(format!("E{}", code.as_str())).unwrap())
 }
@@ -1027,7 +1062,7 @@ fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
 
 fn get_derive_tokens() -> TokenStream {
     quote! {
-        # [derive(Debug, Clone, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+        # [derive(Debug, Clone, PartialEq, PartialOrd, hsr::Serialize, hsr::Deserialize)]
     }
 }
 
@@ -1055,7 +1090,9 @@ fn generate_rust_component_types(typs: &TypeMap<StructOrType>) -> TokenStream {
     for (typename, typ) in typs {
         let descr = typ.meta.description.as_ref().map(|s| s.as_str());
         let def = match &typ.typ {
-            Either::Left(strukt) => generate_struct_def(typename, descr, strukt, Visibility::Public),
+            Either::Left(strukt) => {
+                generate_struct_def(typename, descr, strukt, Visibility::Public)
+            }
             Either::Right(typ) => {
                 let descr = descr.map(doc_comment);
                 // make a type alias
@@ -1085,7 +1122,11 @@ fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     tokens
 }
 
-fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_interface(
+    routes: &Map<Vec<Route>>,
+    title: &str,
+    trait_name: &TypeName,
+) -> TokenStream {
     let mut methods = TokenStream::new();
     let descr = doc_comment(format!("Api generated from '{}' spec", title));
     for (_, route_methods) in routes {
@@ -1096,7 +1137,7 @@ fn generate_rust_interface(routes: &Map<Vec<Route>>, title: &str, trait_name: &T
     quote! {
         #descr
         pub trait #trait_name: 'static {
-            type Error: HsrError;
+            type Error: HasStatusCode;
             fn new(host: Url) -> Self;
 
             #methods
@@ -1114,7 +1155,12 @@ fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) ->
     quote! {#dispatchers}
 }
 
-fn generate_struct_def(name: &TypeName, descr: Option<&str>, Struct { fields }: &Struct, vis: Visibility) -> TokenStream {
+fn generate_struct_def(
+    name: &TypeName,
+    descr: Option<&str>,
+    Struct { fields }: &Struct,
+    vis: Visibility,
+) -> TokenStream {
     let name = ident(name);
     let fieldname = fields.iter().map(|f| &f.name);
     let fieldtype = fields.iter().map(|f| &f.ty);
@@ -1150,14 +1196,17 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Stru
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
             if obj.properties.is_empty() {
-                return Ok(TypeInner::Any.with_meta_either(meta))
+                return Ok(TypeInner::Any.with_meta_either(meta));
             } else {
-                return Struct::from_objlike(obj, api).map(|s| s.with_meta_either(meta))
+                return Struct::from_objlike(obj, api).map(|s| s.with_meta_either(meta));
             }
         }
         SchemaKind::AllOf { all_of: schemas } => {
-            let allof_types = schemas.iter().map(|schema| build_type(schema, api)).collect::<Result<Vec<_>>>()?;
-            return Ok(TypeInner::AllOf(allof_types).with_meta_either(meta))
+            let allof_types = schemas
+                .iter()
+                .map(|schema| build_type(schema, api))
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(TypeInner::AllOf(allof_types).with_meta_either(meta));
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -1186,11 +1235,15 @@ fn combine_types(types: &[StructOrType]) -> Result<Struct> {
         let strukt = match &typ.typ {
             Either::Left(strukt) => strukt,
             // FIXME problem - we can have a Type::Named which we need to dereference :/
-            Either::Right(_other) => return Err(Error::Todo("Only object-like types allowed in AllOf types".to_string()))
+            Either::Right(_other) => {
+                return Err(Error::Todo(
+                    "Only object-like types allowed in AllOf types".to_string(),
+                ))
+            }
         };
         for field in &strukt.fields {
             if let Some(_) = fields.insert(&field.name, field) {
-                return Err(Error::DuplicateName(field.name.to_string()))
+                return Err(Error::DuplicateName(field.name.to_string()));
             }
         }
     }
@@ -1214,6 +1267,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
         .collect();
 
     let server = quote! {
+        #[allow(dead_code)]
         pub mod server {
             use super::*;
 
@@ -1262,6 +1316,8 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     }
 
     quote! {
+        #[allow(dead_code)]
+        #[allow(unused_imports)]
         pub mod client {
             use super::*;
             use hsr::actix_http::http::Method;
@@ -1322,23 +1378,30 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     debug!("Generate clientr");
     let rust_client = generate_rust_client(&routes, &trait_name);
     let code = quote! {
+        #[allow(dead_code)]
 
         // Dump the spec and the ui template in the source file, for serving ui
         const JSON_SPEC: &'static str = #json_spec;
         const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
 
-        // TODO is there a way to re-export the serde derive macros?
-        use hsr::{Void, Error as HsrError, HasStatusCode};
-        use hsr::actix_web::{
-            self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
-            web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
-            middleware::Logger
-        };
-        use hsr::url::Url;
-        use hsr::actix_http::http::{StatusCode};
-        use hsr::futures3::future::{FutureExt, TryFutureExt};
-        use hsr::LocalBoxFuture3;
-        use hsr::futures1::Future as Future1;
+        mod __imports {
+            pub use hsr::{Void, HasStatusCode};
+            pub use hsr::actix_web::{
+                self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
+                web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
+                middleware::Logger
+            };
+            pub use hsr::url::Url;
+            pub use hsr::actix_http::http::{StatusCode};
+            pub use hsr::futures3::future::{FutureExt, TryFutureExt};
+            pub use hsr::HsrFuture;
+            pub use hsr::futures1::Future as Future1;
+
+            // macros re-exported from `serde-derive`
+            pub use hsr::{Serialize, Deserialize};
+        }
+        #[allow(dead_code)]
+        use __imports::*;
 
         // TypeInner definitions
         #rust_component_types
@@ -1351,7 +1414,6 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         #rust_server
         // Client
         #rust_client
-
     };
     let code = code.to_string();
     #[cfg(feature = "rustfmt")]

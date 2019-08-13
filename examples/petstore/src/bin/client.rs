@@ -1,14 +1,16 @@
 #![feature(async_await)]
 
-use petstore::{NewPet, PetstoreApi, client::Client, api::GetPetError};
 use hsr::futures3::{FutureExt, TryFutureExt};
+use petstore::{api::GetPetError, client::Client, NewPet, PetstoreApi};
 
 // Run the client via a CLI
 fn main() {
     env_logger::init();
     let client = Client::new("http://localhost:8000".parse().unwrap());
     let fut = run(&client);
-    hsr::actix_rt::System::new("main").block_on(fut.boxed_local().compat()).unwrap();
+    hsr::actix_rt::System::new("main")
+        .block_on(fut.boxed_local().compat())
+        .unwrap();
 }
 
 fn dbg(v: impl std::fmt::Debug) -> String {
@@ -19,11 +21,11 @@ async fn run(client: &Client) -> Result<(), String> {
     // Create two pets
     let pet1 = NewPet {
         name: "Alex the Goat".into(),
-        tag: None
+        tag: None,
     };
     let pet2 = NewPet {
         name: "Bob the Badger".into(),
-        tag: None
+        tag: None,
     };
     let () = client.create_pet(pet1).map_err(dbg).await?;
     let () = client.create_pet(pet2).map_err(dbg).await?;

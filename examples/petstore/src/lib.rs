@@ -1,20 +1,15 @@
 #![feature(async_await)]
 
-use hsr::futures3::{
-    future::{FutureExt},
-    lock,
-};
-use hsr::LocalBoxFuture3;
+use hsr::futures3::{future::FutureExt, lock};
+use hsr::HsrFuture;
 use regex::Regex;
 
 pub mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
 
-use api::{
-    CreatePetError, Error, GetAllPetsError, GetPetError,
-};
-pub use api::{client, server, Pet, Pets, NewPet, PetstoreApi};
+pub use api::{client, server, NewPet, Pet, Pets, PetstoreApi};
+use api::{CreatePetError, Error, GetAllPetsError, GetPetError};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {
@@ -32,7 +27,6 @@ pub enum InternalError {
 
 // Boilerplate impls necessary to fulfil API contract
 impl hsr::HasStatusCode for InternalError {}
-impl hsr::Error for InternalError {}
 
 // TODO is it possible to remove the requirement for this impl?
 // Alternatively, add a trait bound for HasStatusCode to give a
@@ -104,7 +98,7 @@ impl PetstoreApi for Api {
         &self,
         limit: i64,
         filter: Option<String>,
-    ) -> LocalBoxFuture3<Result<Pets, GetAllPetsError<Self::Error>>> {
+    ) -> HsrFuture<Result<Pets, GetAllPetsError<Self::Error>>> {
         async move {
             let regex = if let Some(filter) = filter {
                 Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
@@ -121,7 +115,7 @@ impl PetstoreApi for Api {
             .boxed()
     }
 
-    fn create_pet(&self, new_pet: NewPet) -> LocalBoxFuture3<Result<(), CreatePetError<Self::Error>>> {
+    fn create_pet(&self, new_pet: NewPet) -> HsrFuture<Result<(), CreatePetError<Self::Error>>> {
         async move {
             let () = self.server_health_check()?;
             let _ = self.add_pet(new_pet).await?; // TODO return usize
@@ -130,7 +124,7 @@ impl PetstoreApi for Api {
             .boxed()
     }
 
-    fn get_pet(&self, pet_id: i64) -> LocalBoxFuture3<Result<Pet, GetPetError<Self::Error>>> {
+    fn get_pet(&self, pet_id: i64) -> HsrFuture<Result<Pet, GetPetError<Self::Error>>> {
         // TODO This is how we would like it to work
         async move {
             self.lookup_pet(pet_id as usize)
@@ -140,4 +134,3 @@ impl PetstoreApi for Api {
             .boxed()
     }
 }
-

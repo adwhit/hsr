@@ -6,3 +6,8 @@ Build fast HTTP apis, fast.
  * Code-gen a server interface (based on actix-web)
  * Implement your interface (simple, safe, strongly typed!)
  * Run!
+
+
+## Quickstart
+
+Take a look at the [quickstart repo](example/quickstart).
