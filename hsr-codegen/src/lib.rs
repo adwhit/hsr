@@ -1,5 +1,4 @@
 #![recursion_limit = "256"]
-#![feature(todo_macro)]
 
 use std::fmt;
 use std::fs;
@@ -128,7 +127,7 @@ fn extract_ref_name(refr: &str) -> Result<TypeName> {
     TypeName::new(parts[3].to_string())
 }
 
-fn gather_types(api: &OpenAPI) -> Result<TypeMap<StructOrType>> {
+fn gather_component_types(api: &OpenAPI) -> Result<TypeMap<StructOrType>> {
     let mut typs = TypeMap::new();
     // gather types defined in components
     if let Some(component) = &api.components {
@@ -220,7 +219,7 @@ impl Route {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api).and_then(|s| s.discard_struct())?
                         }
-                        _content => todo!(),
+                        _content => unimplemented!(),
                     };
                     // TODO validate against path segments
                     path_args.push((id, ty));
@@ -232,7 +231,7 @@ impl Route {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
                             build_type(ref_or_schema, api).and_then(|s| s.discard_struct())?
                         }
-                        _content => todo!(),
+                        _content => unimplemented!(),
                     };
                     if !parameter_data.required {
                         ty = ty.to_option()
@@ -240,7 +239,7 @@ impl Route {
                     // TODO check for duplicates
                     assert!(query_args.insert(id, ty).is_none());
                 }
-                _ => todo!(),
+                _ => unimplemented!(),
             }
         }
 
@@ -807,6 +806,8 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
         debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref(&pathitem)?;
         let mut pathroutes = Vec::new();
+
+        // GET
         if let Some(ref op) = pathitem.get {
             let route = Route::new(
                 op.summary.clone(),
@@ -820,6 +821,8 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
+
+        // POST
         if let Some(ref op) = pathitem.post {
             let body = if let Some(ref body) = op.request_body {
                 // extract the body type
@@ -852,6 +855,7 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
+
         let is_duped_key = routes.insert(path.to_string(), pathroutes).is_some();
         assert!(!is_duped_key);
     }
@@ -931,8 +935,8 @@ impl quote::ToTokens for TypeInner {
                 quote! { #name }
             }
             // TODO handle Any properly
-            Any => todo!(),
-            AllOf(_) => todo!(),
+            Any => unimplemented!(),
+            AllOf(_) => unimplemented!()
         };
         toks.to_tokens(tokens);
     }
@@ -1302,7 +1306,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 
     let trait_name = api_trait_name(&api);
     debug!("Gather types");
-    let typs = gather_types(&api)?;
+    let typs = gather_component_types(&api)?;
     debug!("Gather routes");
     let routes = gather_routes(&api)?;
     debug!("Generate component types");

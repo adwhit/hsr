@@ -7,6 +7,14 @@ edition = "2018"
 [build-dependencies]
 hsr-codegen = { path = "../../hsr-codegen" }
 
+[[bin]]
+name = "petstore-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "petstore-client"
+path = "src/bin/client.rs"
+
 [dependencies]
 hsr = { path = "../../hsr" }
 serde = { version = "1.0.98", features = ['derive'] }

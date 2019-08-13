@@ -12,4 +12,5 @@ fn main() {
     let mut f = File::create(&dest_path).unwrap();
 
     write!(f, "{}", code).unwrap();
+    println!("cargo:rerun-if-changed=petstore.yaml");
 }
