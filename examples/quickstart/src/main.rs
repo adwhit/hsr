@@ -15,7 +15,7 @@ impl QuickstartApi for Api {
         Api
     }
 
-    fn index(&self, name: String) -> hsr::HsrFuture<Result<Hello, api::IndexError<Self::Error>>> {
+    fn greet(&self, name: String) -> hsr::HsrFuture<Result<Hello, api::GreetError<Self::Error>>> {
         hsr::wrap(Ok(Hello {
             name,
             greeting: "Pleased to meet you".into(),
@@ -23,7 +23,18 @@ impl QuickstartApi for Api {
     }
 }
 
-fn main() -> Result<(), std::io::Error> {
-    let uri = "http://127.0.0.1:8000".parse().unwrap();
-    api::server::serve::<Api>(uri)
+use hsr::futures3::TryFutureExt;
+
+fn main() {
+    let uri: hsr::Url = "http://127.0.0.1:8000".parse().unwrap();
+    let uri2 = uri.clone();
+    std::thread::spawn(move || api::server::serve::<Api>(uri));
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = api::client::Client::new(uri2);
+    println!("Querying server");
+    let fut = client.greet("Bobert".to_string());
+    let res = hsr::actix_rt::System::new("main").block_on(fut.compat());
+    println!("Client response: {:?}", res);
 }

@@ -2,15 +2,13 @@ openapi: "3.0.0"
 info:
   version: 1.0.0
   title: Quickstart
-  license:
-    name: MIT
 servers:
   - url: http://localhost:8000
 paths:
   /{name}:
     get:
-      summary: Hello world
-      operationId: index
+      summary: Quickstart
+      operationId: greet
       parameters:
         - name: name
           in: path

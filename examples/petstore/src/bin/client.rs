@@ -27,6 +27,7 @@ async fn run(client: &Client) -> Result<(), String> {
         name: "Bob the Badger".into(),
         tag: None,
     };
+
     let () = client.create_pet(pet1).map_err(dbg).await?;
     let () = client.create_pet(pet2).map_err(dbg).await?;
 
