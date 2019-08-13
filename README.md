@@ -10,12 +10,12 @@ Build fast HTTP apis, fast, with Rust + OpenAPI.
 
 ## Quickstart
 
-Take a look at the [quickstart repo](example/quickstart). It contains the
+Take a look at the [quickstart repo](examples/quickstart). It contains the
 minimum boilerplate needed to get started.
 
 ## Less quick start
 
-Take a look at the [petstore repo](example/petstore) for a more in-depth example.
+Take a look at the [petstore repo](examples/petstore) for a more in-depth example.
 
 ## Roadmap
 
