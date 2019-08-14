@@ -13,7 +13,7 @@ Build fast HTTP apis fast, with Rust, and [OpenAPI](https://swagger.io/docs/spec
 Take a look at the [quickstart repo](examples/quickstart). It contains the
 minimum boilerplate needed to get started.
 
-## Less quick start
+## Less Quick Start
 
 Take a look at the [petstore repo](examples/petstore) for a more in-depth example.
 
