@@ -1274,7 +1274,6 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
             pub fn serve<A: #trait_name + Send + Sync>(host: Url) -> std::io::Result<()> {
-                println!("Serving on host {}", host);
                 let api = AxData::new(A::new(host.clone()));
                 // TODO break this into a 'configure' step
                 HttpServer::new(move || {
