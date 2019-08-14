@@ -3,6 +3,12 @@ name = "hsr-codegen"
 version = "0.1.0"
 authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
+description = "Build fast HTTP APIs fast, with Rust + OpenAPI"
+repository = "https://github.com/jesskfullwood/hsr"
+homepage = "https://github.com/jesskfullwood/hsr"
+keywords = ["swagger", "openapi", "web framework", "rest", "actix"]
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 actix-http = "0.2.8"
@@ -32,5 +38,4 @@ yansi = "0.5.0"
 
 [features]
 rustfmt = [ "rustfmt-nightly" ]
-
 default = [ "rustfmt" ]

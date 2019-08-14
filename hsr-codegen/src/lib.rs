@@ -1229,6 +1229,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Stru
     Ok(typ.with_meta_either(meta))
 }
 
+#[allow(dead_code)]
 fn combine_types(types: &[StructOrType]) -> Result<Struct> {
     let mut fields = IndexMap::new();
     for typ in types {

@@ -49,3 +49,7 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
   - ..but the `hsr` build process is much more seamlessly integrated into typical Rust workflow
 * Error-handling story somewhat different
 * Surely lots of other differences
+
+## License
+
+MIT
