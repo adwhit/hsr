@@ -24,7 +24,9 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 - [x] Type-safe path/query/json handling
 - [x] High performance
 - [ ] HTTPS
+- [ ] Support more methods
 - [ ] Benchmarks
+- [ ] Better tests
 - [ ] Return content-types other than JSON
 - [ ] AnyOf/OneOf schema support
 - [ ] Support all features necessary to get `petstore-expanded.yaml` working

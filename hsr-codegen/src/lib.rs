@@ -68,6 +68,8 @@ pub enum Error {
     BadStatusCode(ApiStatusCode),
     #[fail(display = "Duplicate name: {}", _0)]
     DuplicateName(String),
+    #[fail(display = "Unsupported method: {}", _0)]
+    UnsupportedMethod(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -887,6 +889,30 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
             )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
+        }
+
+        if let Some(_) = pathitem.put {
+            return Err(Error::UnsupportedMethod("PUT"))
+        }
+
+        if let Some(_) = pathitem.delete {
+            return Err(Error::UnsupportedMethod("DELETE"))
+        }
+
+        if let Some(_) = pathitem.options {
+            return Err(Error::UnsupportedMethod("OPTIONS"))
+        }
+
+        if let Some(_) = pathitem.head {
+            return Err(Error::UnsupportedMethod("HEAD"))
+        }
+
+        if let Some(_) = pathitem.patch {
+            return Err(Error::UnsupportedMethod("PATCH"))
+        }
+
+        if let Some(_) = pathitem.trace {
+            return Err(Error::UnsupportedMethod("TRACE"))
         }
 
         let is_duped_key = routes.insert(path.to_string(), pathroutes).is_some();
