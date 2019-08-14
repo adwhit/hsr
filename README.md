@@ -1,8 +1,8 @@
 # HSR
 
-Build fast HTTP apis, fast, with Rust + OpenAPI.
+Build fast HTTP apis fast, with Rust, and [OpenAPI](https://swagger.io/docs/specification/about/)
 
- * Define your API as an [OpenAPI 3.0](https://swagger.io/docs/specification/about/) spec
+ * Define your API as an [OpenAPI 3.0](https://github.com/OAI/OpenAPI-Specification) spec
  * Code-gen a server/client interface (based on actix-web)
  * Implement your interface (simple, safe, strongly typed!)
  * Run! 'If it compiles, it works'
@@ -49,6 +49,17 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
   - ..but the `hsr` build process is much more seamlessly integrated into typical Rust workflow
 * Error-handling story somewhat different
 * Surely lots of other differences
+
+**What do you mean, 'fast'?**
+
+It uses [Actix-Web](https://github.com/actix/actix-web) under the hood, rated as one of the
+fastest web frameworks by [techempower](https://www.techempower.com/benchmarks/#section=data-r18&hw=ph&test=fortune).
+
+No benchmarks yet.
+
+**Why the name?**
+
+I like fast trains.
 
 ## License
 
