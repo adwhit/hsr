@@ -23,12 +23,15 @@ impl QuickstartApi for Api {
     }
 }
 
-use hsr::futures3::TryFutureExt;
-
 fn main() {
+    use hsr::futures3::TryFutureExt;
+
     let uri: hsr::Url = "http://127.0.0.1:8000".parse().unwrap();
     let uri2 = uri.clone();
-    std::thread::spawn(move || api::server::serve::<Api>(uri));
+    std::thread::spawn(move || {
+        println!("Serving at '{}'", uri);
+        api::server::serve::<Api>(uri).unwrap();
+    });
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
