@@ -9,7 +9,7 @@ pub mod api {
 }
 
 pub use api::{client, server, NewPet, Pet, Pets, PetstoreApi};
-use api::{CreatePetError, Error, GetAllPetsError, GetPetError};
+use api::{CreatePetError, DeletePetError, Error, GetAllPetsError, GetPetError};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {
@@ -58,6 +58,15 @@ impl Api {
     async fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
         let db = self.connect_db().await?;
         Ok(db.get(id).cloned())
+    }
+
+    async fn remove_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
+        let mut db = self.connect_db().await?;
+        if id < db.len() {
+            Ok(Some(db.remove(id)))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
@@ -130,6 +139,18 @@ impl PetstoreApi for Api {
             self.lookup_pet(pet_id as usize)
                 .await?
                 .ok_or_else(|| GetPetError::NotFound)
+        }
+            .boxed()
+    }
+    fn delete_pet(
+        &self,
+        pet_id: i64,
+    ) -> HsrFuture<std::result::Result<(), DeletePetError<Self::Error>>> {
+        async move {
+            self.remove_pet(pet_id as usize)
+                .await?
+                .map(|_| ())
+                .ok_or_else(|| DeletePetError::NotFound)
         }
             .boxed()
     }

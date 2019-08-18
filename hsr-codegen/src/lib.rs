@@ -773,7 +773,12 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
         .map(|(path, routes)| {
             let (meth, opid): (Vec<_>, Vec<_>) = routes
                 .iter()
-                .map(|route| (ident(route.method()), route.operation_id()))
+                .map(|route| {
+                    (
+                        ident(route.method().to_string().to_snake_case()),
+                        route.operation_id(),
+                    )
+                })
                 .unzip();
             quote! {
                 web::resource(#path)

@@ -22,9 +22,9 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 - [x] HTTP server
 - [x] HTTP client
 - [x] Type-safe path/query/json handling
+- [x] Supports all HTTP verbs
 - [x] High performance
 - [ ] HTTPS
-- [ ] Support more methods
 - [ ] Benchmarks
 - [ ] Better tests
 - [ ] Return content-types other than JSON

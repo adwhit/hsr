@@ -1,7 +1,11 @@
 #![feature(async_await)]
 
 use hsr::futures3::{FutureExt, TryFutureExt};
-use petstore::{api::GetPetError, client::Client, NewPet, PetstoreApi};
+use petstore::{
+    api::{DeletePetError, GetPetError},
+    client::Client,
+    NewPet, PetstoreApi,
+};
 
 // Run the client via a CLI
 fn main() {
@@ -42,6 +46,15 @@ async fn run(client: &Client) -> Result<(), String> {
     // Fetch a pet that doesn't exist
     // Note the custom return error
     if let Err(GetPetError::NotFound) = client.get_pet(500).await {
+        ()
+    } else {
+        panic!("Not not found")
+    };
+
+    // Empty the DB
+    let () = client.delete_pet(0).map_err(dbg).await?;
+    let () = client.delete_pet(0).map_err(dbg).await?;
+    if let Err(DeletePetError::NotFound) = client.delete_pet(0).await {
         ()
     } else {
         panic!("Not not found")

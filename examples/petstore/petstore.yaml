@@ -6,6 +6,7 @@ info:
     name: MIT
 servers:
   - url: http://localhost:8000
+
 paths:
   /pets:
     get:
@@ -36,6 +37,7 @@ paths:
                 $ref: "#/components/schemas/Pets"
         '400':
           description: Invalid filter regex
+
     post:
       summary: Create a pet
       operationId: createPet
@@ -65,6 +67,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
   /pets/{petId}:
     get:
       summary: Info for a specific pet
@@ -93,6 +96,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+    delete:
+      summary: Delete a pet
+      operationId: deletePet
+      tags:
+        - pets
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          description: The id of the pet to retrieve
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Pet deleted
+        '404':
+          description: Pet not found
+        default:
+          description: unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   schemas:
     Pet:
@@ -110,6 +138,7 @@ components:
           type: string
         tag:
           type: string
+
     NewPet:
       description: A new pet! Fluffy and and cute
       required:
@@ -120,11 +149,13 @@ components:
           type: string
         tag:
           type: string
+
     Pets:
       description: Many pets!
       type: array
       items:
         $ref: "#/components/schemas/Pet"
+
     Error:
       description: Bad, wrong, make feel sad
       required:
@@ -136,6 +167,7 @@ components:
           format: int32
         message:
           type: string
+
     SomeConflict:
       description: We need some conflict resolution
       required:
