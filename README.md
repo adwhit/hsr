@@ -38,6 +38,7 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 - [ ] Works on stable Rust
 - [ ] JSON schema
 - [ ] Tutorial
+- [ ] Auto-generate a client binary
 
 ## FAQ
 

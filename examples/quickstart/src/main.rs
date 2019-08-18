@@ -30,7 +30,7 @@ fn main() {
     let uri2 = uri.clone();
     std::thread::spawn(move || {
         println!("Serving at '{}'", uri);
-        api::server::serve::<Api>(uri).unwrap();
+        api::server::serve::<Api>(hsr::Config::with_host(uri)).unwrap();
     });
 
     std::thread::sleep(std::time::Duration::from_millis(100));

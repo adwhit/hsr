@@ -7,5 +7,6 @@ use petstore::{server, Api};
 fn main() -> Result<(), std::io::Error> {
     env_logger::init();
     let uri = "http://127.0.0.1:8000".parse().unwrap();
-    server::serve::<Api>(uri)
+
+    server::serve::<Api>(hsr::Config::with_host(uri))
 }

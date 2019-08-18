@@ -760,23 +760,31 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
         pub mod server {
             use super::*;
 
+            fn configure_hsr<A: #trait_name + Send + Sync>(cfg: &mut actix_web::web::ServiceConfig) {
+                cfg #(.service(#resources))*;
+            }
+
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
-            pub fn serve<A: #trait_name + Send + Sync>(host: Url) -> std::io::Result<()> {
-                let api = AxData::new(A::new(host.clone()));
-                // TODO break this into a 'configure' step
-                HttpServer::new(move || {
+            pub fn serve<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<()> {
+                let api = AxData::new(A::new(cfg.host.clone()));
+                let server = HttpServer::new(move || {
                     App::new()
                         .register_data(api.clone())
                         .wrap(Logger::default())
                         .configure(|cfg| hsr::configure_spec(cfg, JSON_SPEC, UI_TEMPLATE))
-                    // Add the custom endpoints
-                        #(.service(#resources))*
+                        .configure(configure_hsr::<A>)
+                });
 
-                })
-                // TODO host, uri, bind?? Confusing. Decide best way to pass host around
-                    .bind((host.host_str().unwrap(), host.port().unwrap()))?
-                    .run()
+                // Bind to socket
+                let server = if let Some(ssl) = cfg.ssl {
+                    server.bind_ssl((cfg.host.host_str().unwrap(), cfg.host.port().unwrap()), ssl)
+                } else {
+                    server.bind((cfg.host.host_str().unwrap(), cfg.host.port().unwrap()))
+                }?;
+
+                // Launch!
+                server.run()
             }
         }
     };

@@ -17,6 +17,8 @@ pub use futures3;
 pub use serde_urlencoded;
 pub use url;
 
+pub use openssl;
+
 pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
@@ -103,22 +105,26 @@ pub fn configure_spec(
     spec: &'static str,
     ui: &'static str,
 ) {
+    use actix_web::http::header::ContentType;
     // Add route serving up the json spec
     cfg.route(
         "/spec.json",
-        actix_web::web::get().to(move || {
-            HttpResponse::Ok()
-                .set(actix_web::http::header::ContentType::json())
-                .body(spec)
-        }),
+        actix_web::web::get().to(move || HttpResponse::Ok().set(ContentType::json()).body(spec)),
     )
     // Add route serving up the rendered ui
     .route(
         "/ui.html",
-        actix_web::web::get().to(move || {
-            HttpResponse::Ok()
-                .set(actix_web::http::header::ContentType::html())
-                .body(ui)
-        }),
+        actix_web::web::get().to(move || HttpResponse::Ok().set(ContentType::html()).body(ui)),
     );
+}
+
+pub struct Config {
+    pub host: Url,
+    pub ssl: Option<openssl::ssl::SslAcceptorBuilder>,
+}
+
+impl Config {
+    pub fn with_host(host: Url) -> Self {
+        Self { host, ssl: None }
+    }
 }
