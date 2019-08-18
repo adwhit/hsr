@@ -7,7 +7,8 @@ use quote::quote;
 use crate::{
     analyse_path, build_type, dereference, doc_comment, error_variant_from_status_code,
     generate_struct_def, get_derive_tokens, get_type_from_response, ident, Error, Field, IdMap,
-    Ident, Method, PathSegment, Result, Struct, Type, TypeInner, TypeName, Visibility,
+    Ident, Method, MethodWithBody, MethodWithoutBody, PathSegment, Result, Struct, Type, TypeInner,
+    TypeName, Visibility,
 };
 
 // Route contains all the information necessary to contruct the API
@@ -162,6 +163,59 @@ impl Route {
         })
     }
 
+    pub(crate) fn without_body(
+        path: &str,
+        method: MethodWithoutBody,
+        op: &openapiv3::Operation,
+        api: &OpenAPI,
+    ) -> Result<Route> {
+        Route::new(
+            op.summary.clone(),
+            path,
+            Method::WithoutBody(method),
+            &op.operation_id,
+            &op.parameters,
+            &op.responses,
+            api,
+        )
+    }
+
+    pub(crate) fn with_body(
+        path: &str,
+        method: MethodWithBody,
+        op: &openapiv3::Operation,
+        api: &OpenAPI,
+    ) -> Result<Route> {
+        let body_type = if let Some(ref body) = op.request_body {
+            // extract the body type
+            let body = dereference(body, api.components.as_ref().map(|c| &c.request_bodies))?;
+            if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
+                return Err(Error::Todo(
+                    "Request body must by application/json only".into(),
+                ));
+            }
+            let ref_or_schema = body
+                .content
+                .get("application/json")
+                .unwrap()
+                .schema
+                .as_ref()
+                .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+            Some(build_type(&ref_or_schema, api).and_then(|s| s.discard_struct())?)
+        } else {
+            None
+        };
+        Route::new(
+            op.summary.clone(),
+            path,
+            Method::WithBody { method, body_type },
+            &op.operation_id,
+            &op.parameters,
+            &op.responses,
+            api,
+        )
+    }
+
     pub(crate) fn method(&self) -> &Method {
         &self.method
     }
@@ -237,17 +291,14 @@ impl Route {
             .iter()
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
-        let body_arg = match self.method {
-            Method::Get | Method::Post(None) => None,
-            Method::Post(Some(ref body_ty)) => {
-                let name = if let TypeInner::Named(typename) = &body_ty.typ {
-                    ident(typename.to_string().to_snake_case())
-                } else {
-                    ident("payload")
-                };
-                Some(quote! { #name: #body_ty, })
-            }
-        };
+        let body_arg = self.method.body_type().map(|body_ty| {
+            let name = if let TypeInner::Named(typename) = &body_ty.typ {
+                ident(typename.to_string().to_snake_case())
+            } else {
+                ident("payload")
+            };
+            Some(quote! { #name: #body_ty, })
+        });
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
@@ -304,14 +355,14 @@ impl Route {
             }
         });
 
-        let (body_arg, send_request) = match self.method {
-            Method::Get | Method::Post(None) => (None, quote! {.send()}),
-            Method::Post(Some(ref body_ty)) => (
+        let (body_arg, send_request) = match self.method.body_type() {
+            None => (None, quote! {.send()}),
+            Some(ref body_ty) => (
                 Some(quote! { payload: #body_ty, }),
                 quote! { .send_json(&payload) },
             ),
         };
-        let method = self.method.as_const();
+        let method = ident(&self.method);
 
         fn err_match_arm(
             code: &StatusCode,
@@ -505,10 +556,10 @@ impl Route {
             }
         });
 
-        let body_arg = match self.method {
-            Method::Get | Method::Post(None) => None,
-            Method::Post(Some(ref body_ty)) => Some(quote! { AxJson(body): AxJson<#body_ty>, }),
-        };
+        let body_arg = self
+            .method
+            .body_type()
+            .map(|body_ty| quote! { AxJson(body): AxJson<#body_ty>, });
         let body_into = body_arg.as_ref().map(|_| ident("body"));
 
         let return_ty = &self

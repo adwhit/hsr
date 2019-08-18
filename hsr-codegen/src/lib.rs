@@ -158,26 +158,75 @@ fn api_trait_name(api: &OpenAPI) -> TypeName {
 
 #[derive(Debug, Clone)]
 enum Method {
-    Get,
-    Post(Option<Type>),
-}
-
-impl Method {
-    fn as_const(&self) -> QIdent {
-        match self {
-            Method::Get => ident("GET"),
-            Method::Post(_) => ident("POST"),
-        }
-    }
+    WithoutBody(MethodWithoutBody),
+    WithBody {
+        method: MethodWithBody,
+        body_type: Option<Type>,
+    },
 }
 
 impl fmt::Display for Method {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Method::Get => write!(f, "get"),
-            Method::Post(_) => write!(f, "post"),
+            Self::WithoutBody(method) => method.fmt(f),
+            Self::WithBody { method, .. } => method.fmt(f),
         }
     }
+}
+
+impl Method {
+    fn body_type(&self) -> Option<&Type> {
+        match self {
+            Method::WithoutBody(_)
+            | Method::WithBody {
+                body_type: None, ..
+            } => None,
+            Method::WithBody {
+                body_type: Some(ref body_ty),
+                ..
+            } => Some(body_ty),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MethodWithoutBody {
+    Get,
+    Head,
+    Options,
+    Trace,
+}
+
+impl fmt::Display for MethodWithoutBody {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use MethodWithoutBody::*;
+        match self {
+            Get => write!(f, "GET"),
+            Head => write!(f, "HEAD"),
+            Options => write!(f, "OPTIONS"),
+            Trace => write!(f, "TRACE"),
+        }
+    }
+}
+
+impl fmt::Display for MethodWithBody {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use MethodWithBody::*;
+        match self {
+            Post => write!(f, "POST"),
+            Delete => write!(f, "DELETE"),
+            Put => write!(f, "PUT"),
+            Patch => write!(f, "PATCH"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MethodWithBody {
+    Post,
+    Delete,
+    Put,
+    Patch,
 }
 
 /// Build hsr Type from OpenAPI Response
@@ -306,75 +355,53 @@ fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
 
         // GET
         if let Some(ref op) = pathitem.get {
-            let route = Route::new(
-                op.summary.clone(),
-                path,
-                Method::Get,
-                &op.operation_id,
-                &op.parameters,
-                &op.responses,
-                api,
-            )?;
+            let route = Route::without_body(path, MethodWithoutBody::Get, op, api)?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
         // POST
         if let Some(ref op) = pathitem.post {
-            let body = if let Some(ref body) = op.request_body {
-                // extract the body type
-                let body = dereference(body, api.components.as_ref().map(|c| &c.request_bodies))?;
-                if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
-                    return Err(Error::Todo(
-                        "Request body must by application/json only".into(),
-                    ));
-                }
-                let ref_or_schema = body
-                    .content
-                    .get("application/json")
-                    .unwrap()
-                    .schema
-                    .as_ref()
-                    .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-                Some(build_type(&ref_or_schema, api).and_then(|s| s.discard_struct())?)
-            } else {
-                None
-            };
-            let route = Route::new(
-                op.summary.clone(),
-                path,
-                Method::Post(body),
-                &op.operation_id,
-                &op.parameters,
-                &op.responses,
-                api,
-            )?;
+            let route = Route::with_body(path, MethodWithBody::Post, op, api)?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.put {
-            return Err(Error::UnsupportedMethod("PUT"));
+        // PUT
+        if let Some(ref op) = pathitem.put {
+            let route = Route::with_body(path, MethodWithBody::Put, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.delete {
-            return Err(Error::UnsupportedMethod("DELETE"));
+        if let Some(ref op) = pathitem.patch {
+            let route = Route::with_body(path, MethodWithBody::Patch, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.options {
-            return Err(Error::UnsupportedMethod("OPTIONS"));
+        if let Some(ref op) = pathitem.delete {
+            let route = Route::with_body(path, MethodWithBody::Delete, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.head {
-            return Err(Error::UnsupportedMethod("HEAD"));
+        if let Some(ref op) = pathitem.options {
+            let route = Route::without_body(path, MethodWithoutBody::Options, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.patch {
-            return Err(Error::UnsupportedMethod("PATCH"));
+        if let Some(ref op) = pathitem.head {
+            let route = Route::without_body(path, MethodWithoutBody::Head, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
-        if let Some(_) = pathitem.trace {
-            return Err(Error::UnsupportedMethod("TRACE"));
+        if let Some(ref op) = pathitem.trace {
+            let route = Route::without_body(path, MethodWithoutBody::Trace, op, api)?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
         }
 
         let is_duped_key = routes.insert(path.to_string(), pathroutes).is_some();
