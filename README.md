@@ -36,7 +36,7 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 - [ ] Advanced server configuration (with middleware etc)
 - [ ] Even less boilerplate
 - [ ] Works on stable Rust
-- [ ] JSON schema
+- [ ] support JSON (not just YAML) schema
 - [ ] Tutorial
 - [ ] Auto-generate a client binary
 

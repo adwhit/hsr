@@ -72,8 +72,6 @@ pub enum Error {
     BadStatusCode(ApiStatusCode),
     #[fail(display = "Duplicate name: {}", _0)]
     DuplicateName(String),
-    #[fail(display = "Unsupported method: {}", _0)]
-    UnsupportedMethod(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
