@@ -1,0 +1,12 @@
+[package]
+name = "bench"
+version = "0.1.0"
+authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
+edition = "2018"
+
+[build-dependencies]
+hsr-codegen = { path = "../../hsr-codegen" }
+
+[dependencies]
+hsr = { path = "../../hsr" }
+serde = "1"

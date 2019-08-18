@@ -331,6 +331,10 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     let mut segments = Vec::new();
 
     for segment in path.split('/').skip(1) {
+        // ignore trailing slashes
+        if segment.is_empty() {
+            continue
+        }
         if literal_re.is_match(segment) {
             segments.push(PathSegment::Literal(segment.to_string()))
         } else if let Some(seg) = param_re.captures(segment) {

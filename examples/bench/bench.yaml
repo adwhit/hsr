@@ -1,0 +1,14 @@
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Benchmark
+servers:
+  - url: http://localhost:8000
+
+paths:
+  /:
+    get:
+      operationId: basic
+      responses:
+        '200':
+          description: Minimal endpoint

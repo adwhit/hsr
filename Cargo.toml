@@ -4,5 +4,6 @@ members = [
   "hsr-codegen",
   "examples/quickstart",
   "examples/petstore",
+  "examples/bench",
   # "examples/petstore-expanded",
 ]

@@ -58,7 +58,10 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 It uses [Actix-Web](https://github.com/actix/actix-web) under the hood, rated as one of the
 fastest web frameworks by [techempower](https://www.techempower.com/benchmarks/#section=data-r18&hw=ph&test=fortune).
 
-No benchmarks yet.
+As a simple and not-very-scientific benchmark, on a Dell XPS 13 9370/i7-8550U CPU @ 1.80GHz
+(4 cores, 8 threads), [`wrk2`](https://github.com/giltene/wrk2) measured around 170,000 requests/second
+for a simple do-nothing endpoint (see [bench example](/examples/bench)).
+
 
 **Why the name?**
 

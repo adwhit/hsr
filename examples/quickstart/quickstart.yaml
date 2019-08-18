@@ -4,6 +4,7 @@ info:
   title: Quickstart
 servers:
   - url: http://localhost:8000
+
 paths:
   /{name}:
     get:
@@ -23,6 +24,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Hello"
+
 components:
   schemas:
     Hello:
