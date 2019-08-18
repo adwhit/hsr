@@ -769,19 +769,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
                     App::new()
                         .register_data(api.clone())
                         .wrap(Logger::default())
-                    // TODO make these routes configurable
-                    // Add route serving up the json spec
-                        .route("/spec.json", web::get().to(|| {
-                            HttpResponse::Ok()
-                                .set(actix_web::http::header::ContentType::json())
-                                .body(JSON_SPEC)
-                        }))
-                    // Add route serving up the rendered ui
-                        .route("/ui.html", web::get().to(|| {
-                            HttpResponse::Ok()
-                                .set(actix_web::http::header::ContentType::html())
-                                .body(UI_TEMPLATE)
-                        }))
+                        .configure(|cfg| hsr::configure_spec(cfg, JSON_SPEC, UI_TEMPLATE))
                     // Add the custom endpoints
                         #(.service(#resources))*
 
@@ -876,7 +864,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::{Void, HasStatusCode};
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
-                web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData},
+                web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData, ServiceConfig},
                 middleware::Logger
             };
             pub use hsr::url::Url;

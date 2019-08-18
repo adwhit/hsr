@@ -1,8 +1,7 @@
-use proc_macro2::TokenStream;
-
 use actix_http::http::StatusCode;
 use heck::{CamelCase, SnakeCase};
 use openapiv3::{OpenAPI, ReferenceOr, StatusCode as ApiStatusCode};
+use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{

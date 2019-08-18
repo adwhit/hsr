@@ -97,3 +97,28 @@ impl HasStatusCode for ClientError {}
 pub struct ServerError;
 
 impl HasStatusCode for ServerError {}
+
+pub fn configure_spec(
+    cfg: &mut actix_web::web::ServiceConfig,
+    spec: &'static str,
+    ui: &'static str,
+) {
+    // Add route serving up the json spec
+    cfg.route(
+        "/spec.json",
+        actix_web::web::get().to(move || {
+            HttpResponse::Ok()
+                .set(actix_web::http::header::ContentType::json())
+                .body(spec)
+        }),
+    )
+    // Add route serving up the rendered ui
+    .route(
+        "/ui.html",
+        actix_web::web::get().to(move || {
+            HttpResponse::Ok()
+                .set(actix_web::http::header::ContentType::html())
+                .body(ui)
+        }),
+    );
+}
