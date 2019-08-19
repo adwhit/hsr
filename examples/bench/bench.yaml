@@ -8,7 +8,35 @@ servers:
 paths:
   /:
     get:
-      operationId: basic
+      operationId: basicGet
       responses:
         '200':
-          description: Minimal endpoint
+          description: Simple get
+
+    post:
+      operationId: basicPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Payload'
+      responses:
+        '200':
+          description: Simple post with payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payload"
+
+components:
+  schemas:
+    Payload:
+      required:
+        - key1
+        - key2
+      properties:
+        key1:
+          type: number
+        key2:
+          type: string

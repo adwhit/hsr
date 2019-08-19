@@ -59,9 +59,12 @@ It uses [Actix-Web](https://github.com/actix/actix-web) under the hood, rated as
 fastest web frameworks by [techempower](https://www.techempower.com/benchmarks/#section=data-r18&hw=ph&test=fortune).
 
 As a simple and not-very-scientific benchmark, on a Dell XPS 13 9370/i7-8550U CPU @ 1.80GHz
-(4 cores, 8 threads), [`wrk2`](https://github.com/giltene/wrk2) measured around 170,000 requests/second
-for a simple do-nothing endpoint (see [bench example](/examples/bench)).
+(4 cores, 8 threads), [`wrk2`](https://github.com/giltene/wrk2) measured around:
 
+* 170,000 requests/second for an empty GET request
+* 150,000 requests/second for a POST request with a JSON roundtrip
+
+See [bench example](/examples/bench) for details.
 
 **Why the name?**
 

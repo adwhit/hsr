@@ -13,10 +13,16 @@ impl api::BenchmarkApi for Api {
         Api
     }
 
-    fn basic(&self) -> hsr::HsrFuture<std::result::Result<(), api::BasicError<Self::Error>>> {
+    fn basic_get(&self) -> hsr::HsrFuture<std::result::Result<(), api::BasicGetError<Self::Error>>> {
         hsr::wrap(Ok(()))
     }
 
+    fn basic_post(
+        &self,
+        payload: api::Payload,
+    ) -> hsr::HsrFuture<std::result::Result<api::Payload, api::BasicPostError<Self::Error>>> {
+        hsr::wrap(Ok(payload))
+    }
 }
 
 fn main() {
