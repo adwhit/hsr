@@ -5,7 +5,7 @@ authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
 [build-dependencies]
-hsr-codegen = { path = "../../hsr-codegen", features = ["rustfmt"] }
+hsr-codegen = { path = "../../hsr-codegen" }
 
 [dependencies]
 hsr = { path = "../../hsr" }

@@ -3,19 +3,19 @@
 Build fast HTTP apis fast, with Rust, and [OpenAPI](https://swagger.io/docs/specification/about/)
 
  * Define your API as an [OpenAPI 3.0](https://github.com/OAI/OpenAPI-Specification) spec
- * Code-gen a server/client interface (based on actix-web)
+ * Code-gen a server/client interface
  * Implement your interface (simple, safe, strongly typed!)
- * Run! 'If it compiles, it works'
+ * Run! 'If it compiles, it works!'
 
 
 ## Quickstart
 
-Take a look at the [quickstart repo](examples/quickstart). It contains the
+Take a look at the [quickstart example](examples/quickstart). It contains the
 minimum boilerplate needed to get started.
 
 ## Less Quick Start
 
-Take a look at the [petstore repo](examples/petstore) for a more in-depth example.
+Take a look at the [petstore example](examples/petstore) for a more in-depth example.
 
 ## Roadmap
 
@@ -24,18 +24,18 @@ Take a look at the [petstore repo](examples/petstore) for a more in-depth exampl
 - [x] Type-safe path/query/json handling
 - [x] Supports all HTTP verbs
 - [x] High performance
+- [x] Based on `async/await` and `actix-web 2.0`
+- [x] Use async in trait (partial - uses the amazing [`async-trait`](https://github.com/dtolnay/async-trait))
+- [x] Works on stable Rust
+- [x] Benchmarks
 - [ ] HTTPS
-- [ ] Benchmarks
 - [ ] Better tests
 - [ ] Return content-types other than JSON
 - [ ] AnyOf/OneOf schema support
 - [ ] Support all features necessary to get `petstore-expanded.yaml` working
 - [ ] Support headers
-- [ ] (Once the futures ecosystem has matured) - move away from futures v1
-- [ ] Option to use existential types
 - [ ] Advanced server configuration (with middleware etc)
 - [ ] Even less boilerplate
-- [ ] Works on stable Rust
 - [ ] support JSON (not just YAML) schema
 - [ ] Tutorial
 - [ ] Auto-generate a client binary
