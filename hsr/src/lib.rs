@@ -11,6 +11,7 @@ pub use serde_derive::{Deserialize, Serialize};
 pub use actix_http;
 pub use actix_rt;
 pub use actix_web;
+pub use async_trait;
 pub use awc;
 pub use futures;
 pub use serde_urlencoded;

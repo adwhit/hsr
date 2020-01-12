@@ -302,7 +302,7 @@ impl Route {
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> HsrFuture<#return_ty>;
+            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #return_ty;
         }
     }
 
@@ -375,25 +375,18 @@ impl Route {
                 // We will return some deserialized JSON
                 quote! {
                     #code => {
-                        let fut = resp
+                        match resp
                             .json::<#err_ty_ty>()
-                            .then(|res| match res {
+                            .await {
                                 Ok(json) => Err(#err_ty::#err_ty_variant(json)),
                                 Err(e) => Err(#err_ty::Error(ClientError::Actix(e.into())))
-                            });
-                        // Cast to a boxed future
-                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
-                        fut
+                            }
                     }
                 }
             } else {
                 // Fieldless variant
                 quote! {
-                    #code => {
-                        let fut = fut_err(#err_ty::#err_ty_variant);
-                        let fut: Box<dyn Future<Output = _> = Box::new(fut);
-                        fut
-                    }
+                    #code => Err(#err_ty::#err_ty_variant)
                 }
             }
         }
@@ -404,21 +397,15 @@ impl Route {
                 // We will return some deserialized JSON
                 quote! {
                     #code => {
-                        let fut = resp
+                        resp
                             .json::<#ok_ty>()
-                            .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())));
-                        // Cast to a boxed future
-                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
-                        fut
+                            .await
+                            .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
                     }
                 }
             } else {
                 quote! {
-                    #code => {
-                        let fut = fut_ok(());
-                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
-                        fut
-                    }
+                    #code => Ok(())
                 }
             }
         };
@@ -430,30 +417,27 @@ impl Route {
 
         quote! {
             #[allow(unused_mut)]
-            fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> HsrFuture<#result_ty> {
+            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #result_ty {
                 // Build up our request path
                 let path = format!(#path_template, #(#path_names,)*);
                 let mut url = self.domain.join(&path).unwrap();
                 #add_query_string_to_url
 
-                self.inner
+                let mut resp = self.inner
                     .request(Method::#method, url.as_str())
                     // Send, giving a future containing an HttpResponse
                     #send_request
-                    .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
-                    .and_then(|mut resp| {
-                        // We match on the status type to handle the return correctly
-                        match resp.status().as_u16() {
-                            #ok_match_arm
-                            #(#err_match_arms)*
-                            _ => {
-                                let fut = fut_err(#err_ty::Error(ClientError::BadStatus(resp.status())));
-                                let fut: Box<dyn Future<Output = _>> = Box::new(fut);
-                                fut
-                            }
-                        }
-                    })
-                    .boxed_local()
+                    .await
+                    .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))?;
+                // We match on the status type to handle the return correctly
+                match resp.status().as_u16() {
+                    #ok_match_arm
+                    #(#err_match_arms)*
+                    _ => {
+                        // default match arm
+                        Err(#err_ty::Error(ClientError::BadStatus(resp.status())))
+                     }
+                }
             }
         }
     }
@@ -577,33 +561,27 @@ impl Route {
         let ok_status_code = self.return_ty.0.as_u16();
 
         let code = quote! {
-            fn #opid<A: #trait_name + Send + Sync>(
+            async fn #opid<A: #trait_name + Send + Sync>(
                 data: AxData<A>,
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future<Output = Result<AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Void>> {
+            ) -> AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>> {
 
-                // call our API handler function with requisite arguments, returning a Future
-                // We have to use `async move` here to pin the `Data` to the future
-                async move {
-                    #query_destructure
-                    let out = data.#opid(
-                        // TODO we should destructure everything through pattern-matching the signature
-                        #(#path_names.into_inner(),)*
-                        #(#query_keys,)*
-                        #body_into
-                    )
-                        .await;
-                    let out = out
-                    // wrap returnval in AxJson, if necessary
-                        #maybe_wrap_return_val
-                    // give outcome a status code (simple way of overriding the Responder return type)
-                    .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
-                    Result::<_, Void>::Ok(hsr::result_to_either(out))
-                }
-                // erase the type
-                .boxed_local()
+                // call our API handler function with requisite arguments
+                #query_destructure
+                let out = data.#opid(
+                    // TODO we should destructure everything through pattern-matching the signature
+                    #(#path_names.into_inner(),)*
+                    #(#query_keys,)*
+                    #body_into
+                ).await;
+                let out = out
+                // wrap returnval in AxJson, if necessary
+                    #maybe_wrap_return_val
+                // give outcome a status code (simple way of overriding the Responder return type)
+                .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
+                hsr::result_to_either(out)
             }
         };
         code

@@ -661,6 +661,7 @@ fn generate_rust_interface(
     }
     quote! {
         #descr
+        #[hsr::async_trait::async_trait(?Send)]
         pub trait #trait_name: 'static {
             type Error: HasStatusCode;
             fn new(host: Url) -> Self;
@@ -821,7 +822,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
                 let server = HttpServer::new(move || {
                     App::new()
-                        .data(api.clone())
+                        .app_data(api.clone())
                         .wrap(Logger::default())
                         .configure(|cfg| hsr::configure_spec(cfg, JSON_SPEC, UI_TEMPLATE))
                         .configure(configure_hsr::<A>)
@@ -851,33 +852,34 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     }
 
     quote! {
-        // #[allow(dead_code)]
-        // #[allow(unused_imports)]
-        // pub mod client {
-        //     use super::*;
-        //     use hsr::actix_http::http::Method;
-        //     use hsr::awc::Client as ActixClient;
-        //     use hsr::ClientError;
-        //     use hsr::futures::future::{err as fut_err, ok as fut_ok};
-        //     use hsr::serde_urlencoded;
+        #[allow(dead_code)]
+        #[allow(unused_imports)]
+        pub mod client {
+            use super::*;
+            use hsr::actix_http::http::Method;
+            use hsr::awc::Client as ActixClient;
+            use hsr::ClientError;
+            use hsr::futures::future::{err as fut_err, ok as fut_ok};
+            use hsr::serde_urlencoded;
 
-        //     pub struct Client {
-        //         domain: Url,
-        //         inner: ActixClient,
-        //     }
+            pub struct Client {
+                domain: Url,
+                inner: ActixClient,
+            }
 
-        //     impl #trait_name for Client {
-        //         type Error = ClientError;
-        //         fn new(domain: Url) -> Self {
-        //             Client {
-        //                 domain: domain,
-        //                 inner: ActixClient::new()
-        //             }
-        //         }
+            #[hsr::async_trait::async_trait(?Send)]
+            impl #trait_name for Client {
+                type Error = ClientError;
+                fn new(domain: Url) -> Self {
+                    Client {
+                        domain: domain,
+                        inner: ActixClient::new()
+                    }
+                }
 
-        //         #method_impls
-        //     }
-        // }
+                #method_impls
+            }
+        }
     }
 }
 
