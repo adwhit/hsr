@@ -22,13 +22,6 @@ pub use openssl;
 pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
-pub use futures::future::LocalBoxFuture as HsrFuture;
-
-pub fn wrap<'a, T: 'a>(out: T) -> HsrFuture<'a, T> {
-    use futures::FutureExt;
-    futures::future::ready(out).boxed_local()
-}
-
 use actix_http::http::StatusCode;
 use actix_web::{Either, Error as AxError, HttpRequest, HttpResponse, Responder};
 use std::fmt;
@@ -63,6 +56,26 @@ impl Responder for Void {
 }
 
 impl actix_web::ResponseError for Void {}
+
+#[derive(Debug, Copy, Clone)]
+/// Actix-web responder that always returns Ok
+// replacement for returning bare '()' which was removed in 2.0
+pub struct Success;
+
+impl fmt::Display for Success {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "success")
+    }
+}
+
+impl Responder for Success {
+    type Error = actix_web::Error;
+    type Future = futures::future::Ready<Result<HttpResponse, Self::Error>>;
+
+    fn respond_to(self, req: &HttpRequest) -> Self::Future {
+        return HttpResponse::Ok().finish().respond_to(req);
+    }
+}
 
 /// Associate an http status code with a type. Defaults to 501 Internal Server Error
 pub trait HasStatusCode {

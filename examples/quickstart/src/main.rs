@@ -32,9 +32,8 @@ async fn main() -> Result<(), api::GreetError<hsr::ClientError>> {
     std::thread::spawn(move || {
         println!("Serving at '{}'", uri);
         let mut system = hsr::actix_rt::System::new("main");
-        let server = api::server::server::<Api>(hsr::Config::with_host(uri)).unwrap();
+        let server = api::server::serve::<Api>(hsr::Config::with_host(uri));
         system.block_on(server).unwrap();
-        println!("Died");
     });
 
     std::thread::sleep(std::time::Duration::from_millis(100));

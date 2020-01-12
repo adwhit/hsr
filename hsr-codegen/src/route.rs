@@ -271,7 +271,7 @@ impl Route {
     fn return_ty(&self) -> TokenStream {
         let ok = match &self.return_ty.1 {
             Some(ty) => quote! { #ty },
-            None => quote! { () },
+            None => quote! { hsr::Success },
         };
         let err = self.return_err_ty();
         quote! { std::result::Result<#ok, #err<Self::Error>> }
@@ -386,7 +386,7 @@ impl Route {
             } else {
                 // Fieldless variant
                 quote! {
-                    #code => Err(#err_ty::#err_ty_variant)
+                    #code => {Err(#err_ty::#err_ty_variant)}
                 }
             }
         }
@@ -405,7 +405,7 @@ impl Route {
                 }
             } else {
                 quote! {
-                    #code => Ok(())
+                    #code => {Ok(hsr::Success)}
                 }
             }
         };
@@ -550,7 +550,7 @@ impl Route {
             .1
             .as_ref()
             .map(|ty| quote! { AxJson<#ty> })
-            .unwrap_or(quote! { () });
+            .unwrap_or(quote! { hsr::Success });
         let return_err_ty = self.return_err_ty();
 
         // If return 'Ok' type is not null, we wrap it in AxJson

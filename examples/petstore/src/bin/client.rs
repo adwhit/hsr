@@ -1,4 +1,4 @@
-use hsr::futures3::{FutureExt, TryFutureExt};
+use hsr::futures::TryFutureExt;
 use petstore::{
     api::{DeletePetError, GetPetError},
     client::Client,
@@ -6,13 +6,11 @@ use petstore::{
 };
 
 // Run the client via a CLI
-fn main() {
+#[actix_rt::main]
+async fn main() -> Result<(), String> {
     env_logger::init();
     let client = Client::new("http://localhost:8000".parse().unwrap());
-    let fut = run(&client);
-    hsr::actix_rt::System::new("main")
-        .block_on(fut.boxed_local().compat())
-        .unwrap();
+    run(&client).await
 }
 
 fn dbg(v: impl std::fmt::Debug) -> String {
@@ -30,11 +28,11 @@ async fn run(client: &Client) -> Result<(), String> {
         tag: None,
     };
 
-    let () = client.create_pet(pet1).map_err(dbg).await?;
-    let () = client.create_pet(pet2).map_err(dbg).await?;
+    let _ = client.create_pet(pet1).map_err(dbg).await?;
+    let _ = client.create_pet(pet2).map_err(dbg).await?;
 
     // Fetch a pet
-    let pet = client.get_pet(0).map_err(dbg).await?;
+    let pet = client.get_pet(0).await.map_err(dbg)?;
     println!("Got pet: {:?}", pet);
 
     // Fetch all pets
@@ -50,8 +48,8 @@ async fn run(client: &Client) -> Result<(), String> {
     };
 
     // Empty the DB
-    let () = client.delete_pet(0).map_err(dbg).await?;
-    let () = client.delete_pet(0).map_err(dbg).await?;
+    let _ = client.delete_pet(0).map_err(dbg).await?;
+    let _ = client.delete_pet(0).map_err(dbg).await?;
     if let Err(DeletePetError::NotFound) = client.delete_pet(0).await {
         ()
     } else {

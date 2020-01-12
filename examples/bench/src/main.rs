@@ -4,6 +4,7 @@ mod api {
 
 struct Api;
 
+#[hsr::async_trait::async_trait(?Send)]
 impl api::BenchmarkApi for Api {
     type Error = hsr::ServerError;
 
@@ -11,20 +12,21 @@ impl api::BenchmarkApi for Api {
         Api
     }
 
-    fn basic_get(&self) -> hsr::HsrFuture<std::result::Result<(), api::BasicGetError<Self::Error>>> {
-        hsr::wrap(Ok(()))
+    async fn basic_get(&self) -> Result<hsr::Success, api::BasicGetError<Self::Error>> {
+        Ok(hsr::Success)
     }
 
-    fn basic_post(
+    async fn basic_post(
         &self,
         payload: api::Payload,
-    ) -> hsr::HsrFuture<std::result::Result<api::Payload, api::BasicPostError<Self::Error>>> {
-        hsr::wrap(Ok(payload))
+    ) -> Result<api::Payload, api::BasicPostError<Self::Error>> {
+        Ok(payload)
     }
 }
 
-fn main() {
+#[actix_rt::main]
+async fn main() -> std::io::Result<()> {
     let uri: hsr::Url = "http://127.0.0.1:8000".parse().unwrap();
     println!("Serving at '{}'", uri);
-    api::server::serve::<Api>(hsr::Config::with_host(uri)).unwrap();
+    api::server::serve::<Api>(hsr::Config::with_host(uri)).await
 }

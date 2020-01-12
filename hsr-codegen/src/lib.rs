@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use actix_http::http::StatusCode;
-use derive_more::{Display, From, Deref};
+use derive_more::{Deref, Display, From};
 use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
@@ -339,7 +339,7 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     for segment in path.split('/').skip(1) {
         // ignore trailing slashes
         if segment.is_empty() {
-            continue
+            continue;
         }
         if literal_re.is_match(segment) {
             segments.push(PathSegment::Literal(segment.to_string()))
@@ -809,7 +809,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
-            pub fn server<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<actix_web::dev::Server> {
+            pub async fn serve<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<()> {
                 // We register the user-supplied Api as a Data item.
                 // You might think it would be cleaner to generate out API trait
                 // to not take "self" at all (only inherent impls) and then just
@@ -836,7 +836,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
                 }?;
 
                 // run!
-                Ok(server.run())
+                server.run().await
             }
         }
     };
@@ -930,7 +930,6 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::url::Url;
             pub use hsr::actix_http::http::{StatusCode};
             pub use hsr::futures::future::{Future, FutureExt, TryFutureExt, Ready, ok as fut_ok};
-            pub use hsr::HsrFuture;
 
             // macros re-exported from `serde-derive`
             pub use hsr::{Serialize, Deserialize};
