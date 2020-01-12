@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use hsr::futures3::{future::FutureExt, lock};
 use hsr::HsrFuture;
 use regex::Regex;
@@ -42,7 +40,7 @@ pub struct Api {
 
 // We simulate some kind of database interactions
 impl Api {
-    async fn connect_db(&self) -> ApiResult<lock::MutexGuard<Vec<Pet>>> {
+    async fn connect_db(&self) -> ApiResult<lock::MutexGuard<'_, Vec<Pet>>> {
         if rand::random::<f32>() > 0.95 {
             Err(InternalError::BadConnection)
         } else {

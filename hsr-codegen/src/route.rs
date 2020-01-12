@@ -382,7 +382,7 @@ impl Route {
                                 Err(e) => Err(#err_ty::Error(ClientError::Actix(e.into())))
                             });
                         // Cast to a boxed future
-                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
                         fut
                     }
                 }
@@ -391,7 +391,7 @@ impl Route {
                 quote! {
                     #code => {
                         let fut = fut_err(#err_ty::#err_ty_variant);
-                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        let fut: Box<dyn Future<Output = _> = Box::new(fut);
                         fut
                     }
                 }
@@ -408,7 +408,7 @@ impl Route {
                             .json::<#ok_ty>()
                             .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())));
                         // Cast to a boxed future
-                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
                         fut
                     }
                 }
@@ -416,7 +416,7 @@ impl Route {
                 quote! {
                     #code => {
                         let fut = fut_ok(());
-                        let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                        let fut: Box<dyn Future<Output = _>> = Box::new(fut);
                         fut
                     }
                 }
@@ -438,7 +438,7 @@ impl Route {
 
                 self.inner
                     .request(Method::#method, url.as_str())
-                    // Send, giving a future1 contained an HttpResponse
+                    // Send, giving a future containing an HttpResponse
                     #send_request
                     .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
                     .and_then(|mut resp| {
@@ -448,12 +448,11 @@ impl Route {
                             #(#err_match_arms)*
                             _ => {
                                 let fut = fut_err(#err_ty::Error(ClientError::BadStatus(resp.status())));
-                                let fut: Box<dyn Future1<Item=_, Error=_>> = Box::new(fut);
+                                let fut: Box<dyn Future<Output = _>> = Box::new(fut);
                                 fut
                             }
                         }
                     })
-                    .compat()
                     .boxed_local()
             }
         }
@@ -516,12 +515,12 @@ impl Route {
 
             impl<E: HasStatusCode> Responder for #name<E> {
                 type Error = Void;
-                type Future = Result<HttpResponse, Void>;
+                type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
 
                 fn respond_to(self, _: &HttpRequest) -> Self::Future {
                     let status = self.status_code();
                     // TODO should also serialize object if possible/necessary
-                    Ok(HttpResponse::build(status).finish())
+                    fut_ok(HttpResponse::build(status).finish())
                 }
             }
         }
@@ -583,8 +582,9 @@ impl Route {
                 #(#path_names: AxPath<#path_tys>,)*
                 #query_arg
                 #body_arg
-            ) -> impl Future1<Item = AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Error = Void> {
-                // call our API handler function with requisite arguments, returning a Future3
+            ) -> impl Future<Output = Result<AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>>, Void>> {
+
+                // call our API handler function with requisite arguments, returning a Future
                 // We have to use `async move` here to pin the `Data` to the future
                 async move {
                     #query_destructure
@@ -602,9 +602,8 @@ impl Route {
                     .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
                     Result::<_, Void>::Ok(hsr::result_to_either(out))
                 }
-                // turn it into a Future1
+                // erase the type
                 .boxed_local()
-                    .compat()
             }
         };
         code

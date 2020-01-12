@@ -12,14 +12,12 @@ readme = "README.md"
 
 
 [dependencies]
-futures1 = { package = "futures", version = "0.1.27" }
-futures3 = { package = "futures-preview", version = "0.3.0-alpha.17", features = ["compat"] }
-futures3_core = { package = "futures-core-preview", version = "0.3.0-alpha.17" }
-actix-web = { version = "1.0.5", features = ["ssl"] }
-actix-http = "0.2.8"
-awc = "0.2.3"
-actix-rt = "0.2.4"
-url = "2.1.0"
+futures = { package = "futures", version = "0.3.1" }
+actix-web = { version = "2.0.0", features = ["openssl"] }
+actix-http = "1.0.1"
+awc = "1.0.1"
+actix-rt = "1.0.0"
+url = "2.1.1"
 serde_urlencoded = "0.6.1"
-serde_derive = "1"
-openssl = "0.10.24"
+serde_derive = "1.0.104"
+openssl = "0.10.26"

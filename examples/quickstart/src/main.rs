@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
@@ -24,20 +22,22 @@ impl QuickstartApi for Api {
 }
 
 fn main() {
-    use hsr::futures3::TryFutureExt;
+    use hsr::futures::TryFutureExt;
 
     let uri: hsr::Url = "http://127.0.0.1:8000".parse().unwrap();
     let uri2 = uri.clone();
     std::thread::spawn(move || {
         println!("Serving at '{}'", uri);
-        api::server::serve::<Api>(hsr::Config::with_host(uri)).unwrap();
+        let mut system = hsr::actix_rt::System::new("main");
+        let server = api::server::server::<Api>(hsr::Config::with_host(uri)).unwrap();
+        system.block_on(server).unwrap();
     });
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let client = api::client::Client::new(uri2);
-    println!("Querying server");
-    let fut = client.greet("Bobert".to_string());
-    let res = hsr::actix_rt::System::new("main").block_on(fut.compat());
-    println!("Client response: {:?}", res);
+    // let client = api::client::Client::new(uri2);
+    // println!("Querying server");
+    // let fut = client.greet("Bobert".to_string());
+    // let res = hsr::actix_rt::System::new("main").block_on(fut);
+    // println!("Client response: {:?}", res);
 }

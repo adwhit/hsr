@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use hsr::futures3::{FutureExt, TryFutureExt};
 use petstore::{
     api::{DeletePetError, GetPetError},

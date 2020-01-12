@@ -5,8 +5,8 @@ authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
 edition = "2018"
 
 [build-dependencies]
-hsr-codegen = { path = "../../hsr-codegen" }
+hsr-codegen = { path = "../../hsr-codegen", features = ["rustfmt"] }
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = "1"
+serde = "1.0.104"

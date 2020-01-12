@@ -5,8 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use actix_http::http::StatusCode;
-use derive_deref::Deref;
-use derive_more::{Display, From};
+use derive_more::{Display, From, Deref};
 use either::Either;
 use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
@@ -43,10 +42,13 @@ pub enum Error {
     #[fail(display = "Codegen failed")]
     CodeGen,
     #[fail(display = "Bad reference: \"{}\"", _0)]
+    #[from(ignore)]
     BadReference(String),
     #[fail(display = "Invalid schema: \"{}\"", _0)]
+    #[from(ignore)]
     BadSchema(String),
     #[fail(display = "Unexpected reference: \"{}\"", _0)]
+    #[from(ignore)]
     UnexpectedReference(String),
     #[fail(display = "Schema not supported: {:?}", _0)]
     UnsupportedKind(SchemaKind),
@@ -57,20 +59,26 @@ pub enum Error {
     #[fail(display = "Rust does not support structural typing")]
     NotStructurallyTyped,
     #[fail(display = "Path is malformed: {}", _0)]
+    #[from(ignore)]
     MalformedPath(String),
     #[fail(display = "No operatio Join Private Q&A n id given for route {}", _0)]
+    #[from(ignore)]
     NoOperationId(String),
     #[fail(display = "TODO: {}", _0)]
+    #[from(ignore)]
     Todo(String),
     #[fail(display = "{} is not a valid identifier", _0)]
+    #[from(ignore)]
     BadIdentifier(String),
     #[fail(display = "{} is not a valid type name", _0)]
+    #[from(ignore)]
     BadTypeName(String),
     #[fail(display = "Malformed codegen")]
     BadCodegen,
     #[fail(display = "status code '{}' not supported", _0)]
     BadStatusCode(ApiStatusCode),
     #[fail(display = "Duplicate name: {}", _0)]
+    #[from(ignore)]
     DuplicateName(String),
 }
 
@@ -784,7 +792,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
                 .unzip();
             quote! {
                 web::resource(#path)
-                    #(.route(web::#meth().to_async(#opid::<A>)))*
+                    #(.route(web::#meth().to(#opid::<A>)))*
             }
         })
         .collect();
@@ -800,11 +808,20 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
-            pub fn serve<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<()> {
+            pub fn server<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<actix_web::dev::Server> {
+                // We register the user-supplied Api as a Data item.
+                // You might think it would be cleaner to generate out API trait
+                // to not take "self" at all (only inherent impls) and then just
+                // have Actix call those functions directly, like `.to(Api::func)`.
+                // However we also want a way for the user to pass in arbitrary state to
+                // handlers, so we kill two birds with one stone by stashing the Api
+                // as data, pulling then it back out upon each request and calling
+                // the handler as a method
                 let api = AxData::new(A::new(cfg.host.clone()));
+
                 let server = HttpServer::new(move || {
                     App::new()
-                        .register_data(api.clone())
+                        .data(api.clone())
                         .wrap(Logger::default())
                         .configure(|cfg| hsr::configure_spec(cfg, JSON_SPEC, UI_TEMPLATE))
                         .configure(configure_hsr::<A>)
@@ -812,13 +829,13 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
 
                 // Bind to socket
                 let server = if let Some(ssl) = cfg.ssl {
-                    server.bind_ssl((cfg.host.host_str().unwrap(), cfg.host.port().unwrap()), ssl)
+                    server.bind_openssl((cfg.host.host_str().unwrap(), cfg.host.port().unwrap()), ssl)
                 } else {
                     server.bind((cfg.host.host_str().unwrap(), cfg.host.port().unwrap()))
                 }?;
 
-                // Launch!
-                server.run()
+                // run!
+                Ok(server.run())
             }
         }
     };
@@ -834,34 +851,33 @@ fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> Toke
     }
 
     quote! {
-        #[allow(dead_code)]
-        #[allow(unused_imports)]
-        pub mod client {
-            use super::*;
-            use hsr::actix_http::http::Method;
-            use hsr::awc::Client as ActixClient;
-            use hsr::ClientError;
-            use hsr::futures1::future::{err as fut_err, ok as fut_ok};
-            use hsr::futures3::compat::Future01CompatExt;
-            use hsr::serde_urlencoded;
+        // #[allow(dead_code)]
+        // #[allow(unused_imports)]
+        // pub mod client {
+        //     use super::*;
+        //     use hsr::actix_http::http::Method;
+        //     use hsr::awc::Client as ActixClient;
+        //     use hsr::ClientError;
+        //     use hsr::futures::future::{err as fut_err, ok as fut_ok};
+        //     use hsr::serde_urlencoded;
 
-            pub struct Client {
-                domain: Url,
-                inner: ActixClient,
-            }
+        //     pub struct Client {
+        //         domain: Url,
+        //         inner: ActixClient,
+        //     }
 
-            impl #trait_name for Client {
-                type Error = ClientError;
-                fn new(domain: Url) -> Self {
-                    Client {
-                        domain: domain,
-                        inner: ActixClient::new()
-                    }
-                }
+        //     impl #trait_name for Client {
+        //         type Error = ClientError;
+        //         fn new(domain: Url) -> Self {
+        //             Client {
+        //                 domain: domain,
+        //                 inner: ActixClient::new()
+        //             }
+        //         }
 
-                #method_impls
-            }
-        }
+        //         #method_impls
+        //     }
+        // }
     }
 }
 
@@ -903,7 +919,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
 
         mod __imports {
-            pub use hsr::{Void, HasStatusCode};
+            pub use hsr::{HasStatusCode, Void};
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
                 web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData, ServiceConfig},
@@ -911,9 +927,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             };
             pub use hsr::url::Url;
             pub use hsr::actix_http::http::{StatusCode};
-            pub use hsr::futures3::future::{FutureExt, TryFutureExt};
+            pub use hsr::futures::future::{Future, FutureExt, TryFutureExt, Ready, ok as fut_ok};
             pub use hsr::HsrFuture;
-            pub use hsr::futures1::Future as Future1;
 
             // macros re-exported from `serde-derive`
             pub use hsr::{Serialize, Deserialize};

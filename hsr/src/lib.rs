@@ -12,8 +12,7 @@ pub use actix_http;
 pub use actix_rt;
 pub use actix_web;
 pub use awc;
-pub use futures1;
-pub use futures3;
+pub use futures;
 pub use serde_urlencoded;
 pub use url;
 
@@ -22,11 +21,11 @@ pub use openssl;
 pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
-pub use futures3_core::future::LocalBoxFuture as HsrFuture;
+pub use futures::future::LocalBoxFuture as HsrFuture;
 
 pub fn wrap<'a, T: 'a>(out: T) -> HsrFuture<'a, T> {
-    use futures3::FutureExt;
-    futures3::future::ready(out).boxed_local()
+    use futures::FutureExt;
+    futures::future::ready(out).boxed_local()
 }
 
 use actix_http::http::StatusCode;
@@ -55,7 +54,7 @@ impl fmt::Display for Void {
 
 impl Responder for Void {
     type Error = ();
-    type Future = Result<HttpResponse, ()>;
+    type Future = futures::future::Ready<Result<HttpResponse, ()>>;
 
     fn respond_to(self, _: &HttpRequest) -> Self::Future {
         unreachable!()
