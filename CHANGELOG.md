@@ -1,6 +1,8 @@
 # Changelog
 
-## Release XXX
+## Release 0.2.0
+
+* Convert to `actix 2.0` and `async/await`
 
 * Added support for HTTP verbs other than GET and POST
 

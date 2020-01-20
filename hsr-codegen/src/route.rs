@@ -6,13 +6,14 @@ use quote::quote;
 
 use crate::{
     analyse_path, build_type, dereference, doc_comment, error_variant_from_status_code,
-    generate_struct_def, get_derive_tokens, get_type_from_response, ident, Error, Field, IdMap,
-    Ident, Method, MethodWithBody, MethodWithoutBody, PathSegment, Result, Struct, Type, TypeInner,
-    TypeName, Visibility,
+    generate_struct_def, get_derive_tokens, get_type_of_response, ident, Error, Field, IdMap,
+    Ident, Method, MethodWithBody, MethodWithoutBody, ParametersLookup, PathSegment, RequestLookup,
+    ResponseLookup, Result, SchemaLookup, Struct, Type, TypeInner, TypeName, Visibility,
 };
 
-// Route contains all the information necessary to contruct the API
-// If it has been constructed, the route is logically sound
+/// Route contains all the information necessary to contruct the API
+///
+/// If it has been constructed, the route is logically sound
 #[derive(Debug, Clone)]
 pub struct Route {
     summary: Option<String>,
@@ -27,14 +28,16 @@ pub struct Route {
 }
 
 impl Route {
-    pub(crate) fn new(
+    pub(crate) fn build(
         summary: Option<String>,
         path: &str,
         method: Method,
         operation_id: &Option<String>,
         parameters: &[ReferenceOr<openapiv3::Parameter>],
         responses: &openapiv3::Responses,
-        api: &OpenAPI,
+        schema_lookup: &SchemaLookup,
+        response_lookup: &ResponseLookup,
+        parameters_lookup: &ParametersLookup,
     ) -> Result<Route> {
         let path_segments = analyse_path(path)?;
         let expected_path_args: usize = path_segments
@@ -48,14 +51,14 @@ impl Route {
             })
             .sum();
         let operation_id = match operation_id {
-            Some(ref op) => Ident::new(op),
+            Some(ref op) => op.parse(),
             None => Err(Error::NoOperationId(path.into())),
         }?;
         let mut path_args = vec![];
         let mut query_args = IdMap::new();
         for parameter in parameters {
             use openapiv3::Parameter::*;
-            let parameter = dereference(parameter, api.components.as_ref().map(|c| &c.parameters))?;
+            let parameter = dereference(parameter, parameters_lookup)?;
             // TODO lots of missing impls here
             match parameter {
                 // TODO what do the rest of the args do? (the .. ones)
@@ -66,10 +69,11 @@ impl Route {
                             parameter_data.name
                         )));
                     }
-                    let id = Ident::new(&parameter_data.name)?;
+                    let id = parameter_data.name.parse()?;
                     let ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-                            build_type(ref_or_schema, api).and_then(|s| s.discard_struct())?
+                            build_type(ref_or_schema, schema_lookup)
+                                .and_then(|s| s.discard_struct())?
                         }
                         _content => unimplemented!(),
                     };
@@ -78,10 +82,11 @@ impl Route {
                 }
 
                 Query { parameter_data, .. } => {
-                    let id = Ident::new(&parameter_data.name)?;
+                    let id = parameter_data.name.parse()?;
                     let mut ty = match &parameter_data.format {
                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-                            build_type(ref_or_schema, api).and_then(|s| s.discard_struct())?
+                            build_type(ref_or_schema, schema_lookup)
+                                .and_then(|s| s.discard_struct())?
                         }
                         _content => unimplemented!(),
                     };
@@ -130,23 +135,26 @@ impl Route {
             .and_then(|status| {
                 let code = ApiStatusCode::Code(status.as_u16());
                 let ref_or_resp = &responses.responses[&code];
-                get_type_from_response(&ref_or_resp, api).map(|ty| (status, ty))
+                get_type_of_response(&ref_or_resp, response_lookup, schema_lookup)
+                    .map(|ty| (status, ty))
             })?;
         let err_tys = error_codes
             .iter()
             .map(|&e| {
                 let code = ApiStatusCode::Code(e.as_u16());
                 let ref_or_resp = &responses.responses[&code];
-                get_type_from_response(&ref_or_resp, api).map(|ty| (e, ty))
+                get_type_of_response(&ref_or_resp, response_lookup, schema_lookup).map(|ty| (e, ty))
             })
             .collect::<Result<Vec<_>>>()?;
         let default_err_ty = responses
             .default
             .as_ref()
             .map(|ref_or_resp| {
-                get_type_from_response(&ref_or_resp, api).and_then(|mb_ty| {
-                    mb_ty.ok_or_else(|| Error::Todo("default type may not null".to_string()))
-                })
+                get_type_of_response(&ref_or_resp, response_lookup, schema_lookup).and_then(
+                    |mb_ty| {
+                        mb_ty.ok_or_else(|| Error::Todo("default type may not null".to_string()))
+                    },
+                )
             })
             .transpose()?;
 
@@ -167,16 +175,20 @@ impl Route {
         path: &str,
         method: MethodWithoutBody,
         op: &openapiv3::Operation,
-        api: &OpenAPI,
+        schema_lookup: &SchemaLookup,
+        response_lookup: &ResponseLookup,
+        parameters_lookup: &ParametersLookup,
     ) -> Result<Route> {
-        Route::new(
+        Route::build(
             op.summary.clone(),
             path,
             Method::WithoutBody(method),
             &op.operation_id,
             &op.parameters,
             &op.responses,
-            api,
+            schema_lookup,
+            response_lookup,
+            parameters_lookup,
         )
     }
 
@@ -184,11 +196,14 @@ impl Route {
         path: &str,
         method: MethodWithBody,
         op: &openapiv3::Operation,
-        api: &OpenAPI,
+        schema_lookup: &SchemaLookup,
+        response_lookup: &ResponseLookup,
+        parameters_lookup: &ParametersLookup,
+        req_body_lookup: &RequestLookup,
     ) -> Result<Route> {
         let body_type = if let Some(ref body) = op.request_body {
             // extract the body type
-            let body = dereference(body, api.components.as_ref().map(|c| &c.request_bodies))?;
+            let body = dereference(body, req_body_lookup)?;
             if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
                 return Err(Error::Todo(
                     "Request body must by application/json only".into(),
@@ -201,18 +216,20 @@ impl Route {
                 .schema
                 .as_ref()
                 .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-            Some(build_type(&ref_or_schema, api).and_then(|s| s.discard_struct())?)
+            Some(build_type(&ref_or_schema, schema_lookup).and_then(|s| s.discard_struct())?)
         } else {
             None
         };
-        Route::new(
+        Route::build(
             op.summary.clone(),
             path,
             Method::WithBody { method, body_type },
             &op.operation_id,
             &op.parameters,
             &op.responses,
-            api,
+            schema_lookup,
+            response_lookup,
+            parameters_lookup,
         )
     }
 

@@ -3,6 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 use actix_http::http::StatusCode;
 use derive_more::{Deref, Display, From};
@@ -32,6 +33,10 @@ fn ident(s: impl fmt::Display) -> QIdent {
 type Map<T> = IndexMap<String, T>;
 type IdMap<T> = IndexMap<Ident, T>;
 type TypeMap<T> = IndexMap<TypeName, T>;
+type SchemaLookup = IndexMap<String, ReferenceOr<Schema>>;
+type ResponseLookup = IndexMap<String, ReferenceOr<openapiv3::Response>>;
+type ParametersLookup = IndexMap<String, ReferenceOr<openapiv3::Parameter>>;
+type RequestLookup = IndexMap<String, ReferenceOr<openapiv3::RequestBody>>;
 
 #[derive(Debug, From, Fail)]
 pub enum Error {
@@ -84,6 +89,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Unwrap the reference, or fail
 fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
     match item {
         ReferenceOr::Item(item) => Ok(item),
@@ -93,46 +99,51 @@ fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
     }
 }
 
-fn dereference<'a, T>(
-    refr: &'a ReferenceOr<T>,
-    lookup: Option<&'a Map<ReferenceOr<T>>>,
-) -> Result<&'a T> {
+/// Fetch reference target via a lookup
+fn dereference<'a, T>(refr: &'a ReferenceOr<T>, lookup: &'a Map<ReferenceOr<T>>) -> Result<&'a T> {
     match refr {
         ReferenceOr::Reference { reference } => lookup
-            .and_then(|map| map.get(reference))
+            .get(reference)
             .ok_or_else(|| Error::BadReference(reference.to_string()))
             .and_then(|refr| dereference(refr, lookup)),
         ReferenceOr::Item(item) => Ok(item),
     }
 }
 
+/// Check that a reference string exists within the API
 fn validate_schema_ref<'a>(
     refr: &'a str,
-    api: &'a OpenAPI,
-    depth: u32,
+    schema_lookup: &'a SchemaLookup,
 ) -> Result<(TypeName, SchemaData)> {
-    if depth > 100 {
-        // circular reference!!
-        return Err(Error::BadReference(refr.to_string()));
-    }
-    let name = extract_ref_name(refr)?;
-    // Do the lookup. We are just checking the ref points to 'something'
-    let schema_or_ref = api
-        .components
-        .as_ref()
-        .and_then(|c| c.schemas.get(&name.to_string()))
-        .ok_or(Error::BadReference(refr.to_string()))?;
-    // recursively dereference
-    match schema_or_ref {
-        ReferenceOr::Reference { reference } => {
-            let (_, meta) = validate_schema_ref(reference, api, depth + 1)?;
-            Ok((name, meta))
+    fn validate_schema_ref_depth<'a>(
+        refr: &'a str,
+        lookup: &'a SchemaLookup,
+        depth: u32,
+    ) -> Result<(TypeName, SchemaData)> {
+        if depth > 20 {
+            // circular reference!!
+            return Err(Error::BadReference(refr.to_string()));
         }
-        ReferenceOr::Item(schema) => Ok((name, schema.schema_data.clone())),
+        let name = extract_ref_name(refr)?;
+        // Do the lookup. We are just checking the ref points to 'something'
+        let schema_or_ref = lookup
+            .get(&name.to_string())
+            .ok_or(Error::BadReference(refr.to_string()))?;
+        // recursively dereference
+        match schema_or_ref {
+            ReferenceOr::Reference { reference } => {
+                let (_, meta) = validate_schema_ref_depth(reference, lookup, depth + 1)?;
+                Ok((name, meta))
+            }
+            ReferenceOr::Item(schema) => Ok((name, schema.schema_data.clone())),
+        }
     }
+    validate_schema_ref_depth(refr, schema_lookup, 0)
 }
 
+/// Extract the type name from the reference
 fn extract_ref_name(refr: &str) -> Result<TypeName> {
+    // This only works with form '#/components/schema/<NAME>'
     let err = Error::BadReference(refr.to_string());
     if !refr.starts_with("#") {
         return Err(err);
@@ -144,16 +155,16 @@ fn extract_ref_name(refr: &str) -> Result<TypeName> {
     TypeName::new(parts[3].to_string())
 }
 
-fn gather_component_types(api: &OpenAPI) -> Result<TypeMap<StructOrType>> {
+/// Traverse the '#/components/schema' section of the spec and prepare type
+/// definitions from the descriptions
+fn gather_component_types(schema_lookup: &SchemaLookup) -> Result<TypeMap<StructOrType>> {
     let mut typs = TypeMap::new();
     // gather types defined in components
-    if let Some(component) = &api.components {
-        for (name, schema) in &component.schemas {
-            info!("Processing schema: {}", name);
-            let typename = TypeName::new(name.clone())?;
-            let typ = build_type(&schema, api)?;
-            assert!(typs.insert(typename, typ).is_none());
-        }
+    for (name, schema) in schema_lookup {
+        info!("Processing schema: {}", name);
+        let typename = TypeName::new(name.clone())?;
+        let typ = build_type(&schema, &schema_lookup)?;
+        assert!(typs.insert(typename, typ).is_none());
     }
     Ok(typs)
 }
@@ -162,11 +173,14 @@ fn api_trait_name(api: &OpenAPI) -> TypeName {
     TypeName::new(format!("{}Api", api.info.title.to_camel_case())).unwrap()
 }
 
+/// Separately represents methods which CANNOT take a body (GET, HEAD, OPTIONS, TRACE)
+/// and those which MAY take a body (POST, PATCH, PUT, DELETE)
 #[derive(Debug, Clone)]
 enum Method {
     WithoutBody(MethodWithoutBody),
     WithBody {
         method: MethodWithBody,
+        /// The expected body payload, if any
         body_type: Option<Type>,
     },
 }
@@ -236,23 +250,22 @@ enum MethodWithBody {
 }
 
 /// Build hsr Type from OpenAPI Response
-fn get_type_from_response(
+fn get_type_of_response(
     ref_or_resp: &ReferenceOr<openapiv3::Response>,
-    api: &OpenAPI,
+    response_lookup: &ResponseLookup,
+    schema_lookup: &SchemaLookup,
 ) -> Result<Option<Type>> {
-    let resp = dereference(ref_or_resp, api.components.as_ref().map(|c| &c.responses))?;
+    let resp = dereference(ref_or_resp, response_lookup)?;
     if !resp.headers.is_empty() {
-        return Err(Error::Todo("response headers not supported".into()));
+        todo!("response headers not supported")
     }
     if !resp.links.is_empty() {
-        return Err(Error::Todo("response links not supported".into()));
+        todo!("response links not supported")
     }
     if resp.content.is_empty() {
         Ok(None)
     } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
-        return Err(Error::Todo(
-            "content type must be 'application/json'".into(),
-        ));
+        todo!("content type must be 'application/json'")
     } else {
         let ref_or_schema = resp
             .content
@@ -260,21 +273,23 @@ fn get_type_from_response(
             .unwrap()
             .schema
             .as_ref()
-            .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
+            .ok_or_else(|| todo!("Media type does not contain schema"))
+            .unwrap();
         Ok(Some(
-            build_type(&ref_or_schema, api).and_then(|s| s.discard_struct())?,
+            build_type(&ref_or_schema, schema_lookup).and_then(|s| s.discard_struct())?,
         ))
     }
 }
 
 /// A string which is a valid identifier (snake_case)
 ///
-/// Do not construct directly, instead use `new`
+/// Do not construct directly, instead use str.parse
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct Ident(String);
 
-impl Ident {
-    fn new(val: &str) -> Result<Ident> {
+impl FromStr for Ident {
+    type Err = Error;
+    fn from_str(val: &str) -> Result<Self> {
         // Check the identifier string in valid.
         // We use snake_case internally, but additionally allow mixedCase identifiers
         // to be passed, since this is common in JS world
@@ -355,61 +370,132 @@ fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
     Ok(segments)
 }
 
-fn gather_routes(api: &OpenAPI) -> Result<Map<Vec<Route>>> {
+fn gather_routes(
+    paths: &openapiv3::Paths,
+    schema_lookup: &SchemaLookup,
+    response_lookup: &ResponseLookup,
+    param_lookup: &ParametersLookup,
+    req_body_lookup: &RequestLookup,
+) -> Result<Map<Vec<Route>>> {
     let mut routes = Map::new();
-    debug!("Found paths: {:?}", api.paths.keys().collect::<Vec<_>>());
-    for (path, pathitem) in &api.paths {
+    debug!("Found paths: {:?}", paths.keys().collect::<Vec<_>>());
+    for (path, pathitem) in paths {
         debug!("Processing path: {:?}", path);
         let pathitem = unwrap_ref(&pathitem)?;
         let mut pathroutes = Vec::new();
 
+        // *** methods without body ***
         // GET
         if let Some(ref op) = pathitem.get {
-            let route = Route::without_body(path, MethodWithoutBody::Get, op, api)?;
+            let route = Route::without_body(
+                path,
+                MethodWithoutBody::Get,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
+        // OPTIONS
+        if let Some(ref op) = pathitem.options {
+            let route = Route::without_body(
+                path,
+                MethodWithoutBody::Options,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+            )?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
+        }
+
+        // HEAD
+        if let Some(ref op) = pathitem.head {
+            let route = Route::without_body(
+                path,
+                MethodWithoutBody::Head,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+            )?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
+        }
+
+        // TRACE
+        if let Some(ref op) = pathitem.trace {
+            let route = Route::without_body(
+                path,
+                MethodWithoutBody::Trace,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+            )?;
+            debug!("Add route: {:?}", route);
+            pathroutes.push(route)
+        }
+
+        // *** methods with body ***
         // POST
         if let Some(ref op) = pathitem.post {
-            let route = Route::with_body(path, MethodWithBody::Post, op, api)?;
+            let route = Route::with_body(
+                path,
+                MethodWithBody::Post,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+                req_body_lookup,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
         // PUT
         if let Some(ref op) = pathitem.put {
-            let route = Route::with_body(path, MethodWithBody::Put, op, api)?;
+            let route = Route::with_body(
+                path,
+                MethodWithBody::Put,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+                req_body_lookup,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
         if let Some(ref op) = pathitem.patch {
-            let route = Route::with_body(path, MethodWithBody::Patch, op, api)?;
+            let route = Route::with_body(
+                path,
+                MethodWithBody::Patch,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+                req_body_lookup,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
 
         if let Some(ref op) = pathitem.delete {
-            let route = Route::with_body(path, MethodWithBody::Delete, op, api)?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        if let Some(ref op) = pathitem.options {
-            let route = Route::without_body(path, MethodWithoutBody::Options, op, api)?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        if let Some(ref op) = pathitem.head {
-            let route = Route::without_body(path, MethodWithoutBody::Head, op, api)?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        if let Some(ref op) = pathitem.trace {
-            let route = Route::without_body(path, MethodWithoutBody::Trace, op, api)?;
+            let route = Route::with_body(
+                path,
+                MethodWithBody::Delete,
+                op,
+                schema_lookup,
+                response_lookup,
+                param_lookup,
+                req_body_lookup,
+            )?;
             debug!("Add route: {:?}", route);
             pathroutes.push(route)
         }
@@ -447,23 +533,33 @@ impl Type {
     }
 }
 
+// Out general strategy is to recursively traverse the openapi object and gather all the
+// types together. We separate out the types into Struct and TypeInner. A Struct represents
+// a 'raw', unnamed object. It just informs us about the fields within. A bare Struct may not
+// be instantiated directly, because it doesn't have a name.
 type Type = TypeWithMeta<TypeInner>;
 type StructOrType = TypeWithMeta<Either<Struct, TypeInner>>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
+    // primitives
     String,
     F64,
     I64,
     Bool,
+    // An array of of some inner type
     Array(Box<Type>),
+    // A type which is nullable
     Option(Box<Type>),
+    // Any type. Could be anything! Probably a user-error
     Any,
-    AllOf(Vec<StructOrType>),
+    // Some type which is defined elsewhere, we only have the name.
+    // Probably comes from a reference
     Named(TypeName),
 }
 
 impl TypeInner {
+    /// Attach metadata to
     fn with_meta_either(self, meta: SchemaData) -> StructOrType {
         TypeWithMeta {
             meta,
@@ -497,7 +593,6 @@ impl quote::ToTokens for TypeInner {
             }
             // TODO handle Any properly
             Any => unimplemented!(),
-            AllOf(_) => unimplemented!(),
         };
         toks.to_tokens(tokens);
     }
@@ -532,17 +627,17 @@ impl Struct {
         Ok(Struct { fields })
     }
 
-    fn from_objlike<T: ObjectLike>(obj: &T, api: &OpenAPI) -> Result<Self> {
+    fn from_objlike<T: ObjectLike>(obj: &T, schema_lookup: &SchemaLookup) -> Result<Self> {
         let mut fields = Vec::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
-            let mut ty = build_type(&schemaref, api).and_then(|s| s.discard_struct())?;
+            let mut ty = build_type(&schemaref, schema_lookup).and_then(|s| s.discard_struct())?;
             if !required_args.contains(name) {
                 ty = ty.to_option();
             }
             let field = Field {
-                name: Ident::new(name)?,
+                name: name.parse()?,
                 ty,
             };
             fields.push(field);
@@ -709,10 +804,13 @@ fn generate_struct_def(
 }
 
 // TODO this probably doesn't need to accept the whole API object
-fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<StructOrType> {
+fn build_type(
+    ref_or_schema: &ReferenceOr<Schema>,
+    schema_lookup: &SchemaLookup,
+) -> Result<StructOrType> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
-            let (name, meta) = validate_schema_ref(reference, api, 0)?;
+            let (name, meta) = validate_schema_ref(reference, schema_lookup)?;
             return Ok(TypeInner::Named(name).with_meta_either(meta));
         }
         ReferenceOr::Item(item) => item,
@@ -724,15 +822,17 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Stru
             if obj.properties.is_empty() {
                 return Ok(TypeInner::Any.with_meta_either(meta));
             } else {
-                return Struct::from_objlike(obj, api).map(|s| s.with_meta_either(meta));
+                return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta));
             }
         }
         SchemaKind::AllOf { all_of: schemas } => {
             let allof_types = schemas
                 .iter()
-                .map(|schema| build_type(schema, api))
+                .map(|schema| build_type(schema, schema_lookup))
                 .collect::<Result<Vec<_>>>()?;
-            return Ok(TypeInner::AllOf(allof_types).with_meta_either(meta));
+            // It's an 'allOf'. We need to costruct a new type by combining other types together
+            // return combine_types(&allof_types).map(|s| s.with_meta_either(meta))
+            todo!()
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -745,18 +845,21 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>, api: &OpenAPI) -> Result<Stru
         ApiType::Boolean {} => TypeInner::Bool,
         ApiType::Array(arr) => {
             let items = arr.items.clone().unbox();
-            let inner = build_type(&items, api).and_then(|t| t.discard_struct())?;
+            let inner = build_type(&items, schema_lookup).and_then(|t| t.discard_struct())?;
             TypeInner::Array(Box::new(inner))
         }
         ApiType::Object(obj) => {
-            return Struct::from_objlike(obj, api).map(|s| s.with_meta_either(meta))
+            return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta))
         }
     };
     Ok(typ.with_meta_either(meta))
 }
 
 #[allow(dead_code)]
-fn combine_types(types: &[StructOrType]) -> Result<Struct> {
+fn combine_types(
+    types: &[StructOrType],
+    lookup: &Map<ReferenceOr<StructOrType>>,
+) -> Result<Struct> {
     let mut fields = IndexMap::new();
     for typ in types {
         let strukt = match &typ.typ {
@@ -892,15 +995,26 @@ pub fn generate_from_yaml_file(yaml: impl AsRef<Path>) -> Result<String> {
 pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String> {
     let mut openapi_source = String::new();
     yaml.read_to_string(&mut openapi_source)?;
-    let api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
+    let mut api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
+    let components = api.components.take().unwrap_or_default();
+    let schema_lookup = components.schemas;
+    let response_lookup = components.responses;
+    let parameters_lookup = components.parameters;
+    let req_body_lookup = components.request_bodies;
 
     let json_spec = serde_json::to_string(&api).expect("Bad api serialization");
 
     let trait_name = api_trait_name(&api);
     debug!("Gather types");
-    let typs = gather_component_types(&api)?;
+    let typs = gather_component_types(&schema_lookup)?;
     debug!("Gather routes");
-    let routes = gather_routes(&api)?;
+    let routes = gather_routes(
+        &api.paths,
+        &schema_lookup,
+        &response_lookup,
+        &parameters_lookup,
+        &req_body_lookup,
+    )?;
     debug!("Generate component types");
     let rust_component_types = generate_rust_component_types(&typs);
     debug!("Generate route types");
