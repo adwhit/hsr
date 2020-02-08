@@ -6,20 +6,23 @@ use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{
-    AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaData, SchemaKind,
-    Operation, Parameter, ParameterSchemaOrContent,
-    StatusCode as ApiStatusCode, Type as ApiType,
+    AnySchema, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent, ReferenceOr,
+    Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
 
 use std::collections::HashMap;
+use std::fmt;
 
-use crate::{SchemaLookup, ParameterLookup, Error, Result, Ident, unwrap_ref};
+use crate::{
+    dereference, unwrap_ref, Error, Ident, Map, MethodWithBody, MethodWithoutBody,
+    ParametersLookup, Result, SchemaLookup,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-struct ApiPath(Vec<String>);
+pub(crate) struct ApiPath(Vec<String>);
 
 type TypeLookup = HashMap<ApiPath, ReferenceOr<Type>>;
 
@@ -31,7 +34,7 @@ impl ApiPath {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Type {
+pub(crate) struct Type {
     meta: SchemaData,
     typ: TypeInner,
 }
@@ -44,35 +47,91 @@ enum TypeInner {
     I64,
     Bool,
     // An array of of some inner type
-    Array(Box<Type>),
+    Array(Box<ReferenceOr<Type>>),
     // A type which is nullable
-    Option(Box<Type>),
+    Option(Box<TypeInner>),
     // Any type. Could be anything! Probably a user-error
     Any,
-    Struct { fields: Vec<Field> }
+    AllOf(Vec<ReferenceOr<Type>>),
+    OneOf(Vec<ReferenceOr<Type>>),
+    Struct(Struct),
 }
 
 impl TypeInner {
     /// Attach metadata to
+    fn into_option(self) -> TypeInner {
+        Self::Option(Box::new(self))
+    }
+
+    /// Attach metadata to
     fn with_meta(self, meta: SchemaData) -> Type {
-        Type {
-            meta,
-            typ: self
-        }
+        Type { meta, typ: self }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Field {
-    name: Ident,
-    ty: Type,
+struct Struct {
+    fields: Vec<Field>,
 }
 
-fn identify_types(api: &OpenAPI) -> Result<TypeLookup> {
+impl Struct {
+    fn new(fields: Vec<Field>) -> Result<Struct> {
+        if fields.is_empty() {
+            return Err(Error::EmptyStruct);
+        }
+        // TODO other validation?
+        Ok(Struct { fields })
+    }
+
+    fn from_objlike<T: ObjectLike>(obj: &T) -> Result<Self> {
+        let mut fields = Vec::new();
+        let required_args: Set<String> = obj.required().iter().cloned().collect();
+        for (name, schemaref) in obj.properties() {
+            let schemaref = schemaref.clone().unbox();
+            let mut ty = build_type(&schemaref)?;
+            let field = Field {
+                name: name.parse()?,
+                ty,
+            };
+            fields.push(field);
+        }
+        Self::new(fields)
+    }
+}
+
+trait ObjectLike {
+    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
+    fn required(&self) -> &[String];
+}
+
+macro_rules! impl_objlike {
+    ($obj:ty) => {
+        impl ObjectLike for $obj {
+            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
+                &self.properties
+            }
+            fn required(&self) -> &[String] {
+                &self.required
+            }
+        }
+    };
+}
+
+impl_objlike!(ObjectType);
+impl_objlike!(AnySchema);
+
+#[derive(Clone, Debug, PartialEq)]
+struct Field {
+    name: Ident,
+    ty: ReferenceOr<Type>,
+}
+
+pub(crate) fn gather_types(api: &OpenAPI) -> Result<TypeLookup> {
     let dummy = Default::default();
     let components = api.components.as_ref().unwrap_or(&dummy);
     let mut index = TypeLookup::new();
     gather_component_types(&components.schemas, &mut index)?;
+    gather_path_types(&api.paths, &mut index, &components.parameters)?;
     Ok(index)
 }
 
@@ -87,66 +146,11 @@ fn gather_component_types(schema_lookup: &SchemaLookup, index: &mut TypeLookup) 
     Ok(())
 }
 
-fn gather_parameter_types(param: Parameter, path: ApiPath, index: &mut TypeLookup) -> Result<()> {
-    use Parameter::*;
-    let parameter_data = match param {
-        Query { parameter_data, .. } => parameter_data,
-        Path { parameter_data, .. } => parameter_data,
-        Header { parameter_data, .. } => parameter_data,
-        Cookie { parameter_data, .. } => parameter_data,
-    };
-    let path = path.push(parameter_data.name);
-    match parameter_data.format {
-        ParameterSchemaOrContent::Schema(schema) => {
-            let typ = build_type(&schema)?;
-            assert!(index.insert(path, typ).is_none());
-        },
-        ParameterSchemaOrContent::Content(_) => todo!()
-    }
-    Ok(())
-}
-
-fn gather_operation_types(op: &Operation, path: ApiPath, param_lookup: &ParameterLookup, index: &mut TypeLookup) -> Result<()> {
-    for param in op.parameters {
-        gather_parameter_types(param, path, index)?;
-    }
-
-    Ok(())
-}
-
-
-fn apply_operation<F>(pathitem: &openapiv3::PathItem, func: F) -> Result<()>
-    where F: FnMut(&Operation) -> Result<()>
-{
-        if let Some(ref op) = pathitem.get {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.options {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.head {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.trace {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.post {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.put {
-            func(op)?;
-        }
-        if let Some(ref op) = pathitem.patch {
-            func(op)?;
-        }
-    if let Some(ref op) = pathitem.delete {
-            func(op)?;
-        }
-    Ok(())
-}
-
-
-fn gather_path_types(paths: &openapiv3::Paths, index: &mut TypeLookup, param_lookup: &ParameterLookup) -> Result<()> {
+fn gather_path_types(
+    paths: &openapiv3::Paths,
+    index: &mut TypeLookup,
+    param_lookup: &ParametersLookup,
+) -> Result<()> {
     let api_path = ApiPath::default().push("paths");
     for (path, ref_or_item) in paths {
         let api_path = api_path.clone().push(path);
@@ -154,60 +158,118 @@ fn gather_path_types(paths: &openapiv3::Paths, index: &mut TypeLookup, param_loo
         debug!("Gathering types for path: {:?}", path);
         // TODO lookup
         let pathitem = unwrap_ref(&ref_or_item)?;
-        apply_operation(|op| gather_operation_types(op, api_path, index))
+        apply_over_operations(pathitem, |op, method| {
+            let api_path = api_path.clone().push(method.to_string());
+            gather_operation_types(op, api_path.clone(), index, param_lookup)
+        })?;
+    }
 
-        if let Some(ref op) = pathitem.get {
-            let api_path = api_path.clone().push("get");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.options {
-            let api_path = api_path.clone().push("options");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.head {
-            let api_path = api_path.clone().push("head");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.trace {
-            let api_path = api_path.clone().push("trace");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.post {
-            let api_path = api_path.clone().push("post");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.put {
-            let api_path = api_path.clone().push("put");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.patch {
-            let api_path = api_path.clone().push("patch");
-            gather_operation_types(op, api_path, index)?;
-        }
-        if let Some(ref op) = pathitem.delete {
-            let api_path = api_path.clone().push("delete");
-            gather_operation_types(op, api_path, index)?;
-        }
+    Ok(())
+}
+
+fn apply_over_operations<F>(pathitem: &openapiv3::PathItem, mut func: F) -> Result<()>
+where
+    F: FnMut(&Operation, Method) -> Result<()>,
+{
+    use Method::*;
+    use MethodWithBody::*;
+    use MethodWithoutBody::*;
+    if let Some(ref op) = pathitem.get {
+        func(op, WithoutBody(Get))?;
+    }
+    if let Some(ref op) = pathitem.options {
+        func(op, WithoutBody(Options))?;
+    }
+    if let Some(ref op) = pathitem.head {
+        func(op, WithoutBody(Head))?;
+    }
+    if let Some(ref op) = pathitem.trace {
+        func(op, WithoutBody(Trace))?;
+    }
+    if let Some(ref op) = pathitem.post {
+        func(op, WithBody(Post))?;
+    }
+    if let Some(ref op) = pathitem.put {
+        func(op, WithBody(Put))?;
+    }
+    if let Some(ref op) = pathitem.patch {
+        func(op, WithBody(Patch))?;
+    }
+    if let Some(ref op) = pathitem.delete {
+        func(op, WithBody(Delete))?;
     }
     Ok(())
+}
+
+fn gather_operation_types(
+    op: &Operation,
+    path: ApiPath,
+    index: &mut TypeLookup,
+    param_lookup: &ParametersLookup,
+) -> Result<()> {
+    for param in &op.parameters {
+        let param = dereference(param, param_lookup)?;
+        gather_parameter_types(param, path.clone(), index)?;
+    }
+
+    Ok(())
+}
+
+fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLookup) -> Result<()> {
+    use Parameter::*;
+    let parameter_data = match param {
+        Query { parameter_data, .. } => parameter_data,
+        Path { parameter_data, .. } => parameter_data,
+        Header { parameter_data, .. } => parameter_data,
+        Cookie { parameter_data, .. } => parameter_data,
+    };
+    let path = path.push(&parameter_data.name);
+    match &parameter_data.format {
+        ParameterSchemaOrContent::Schema(schema) => {
+            let typ = build_type(&schema)?;
+            println!("{:?}", path);
+            assert!(index.insert(path, typ).is_none());
+        }
+        ParameterSchemaOrContent::Content(_) => todo!(),
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Method {
+    WithoutBody(MethodWithoutBody),
+    WithBody(MethodWithBody),
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::WithoutBody(method) => method.fmt(f),
+            Self::WithBody(method) => method.fmt(f),
+        }
+    }
 }
 
 // TODO this probably doesn't need to accept the whole API object
 fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> {
     let schema = match ref_or_schema {
-        ReferenceOr::Reference { reference } => return Ok(ReferenceOr::Reference { reference: reference.clone() }),
+        ReferenceOr::Reference { reference } => {
+            return Ok(ReferenceOr::Reference {
+                reference: reference.clone(),
+            })
+        }
         ReferenceOr::Item(item) => item,
     };
     let meta = schema.schema_data.clone();
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
-            if obj.properties.is_empty() {
-                return Ok(ReferenceOr::Item(TypeInner::Any.with_meta(meta)));
+            let inner = if obj.properties.is_empty() {
+                TypeInner::Any
             } else {
-                // return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta));
-                todo!()
-            }
+                TypeInner::Struct(Struct::from_objlike(obj)?)
+            };
+            return Ok(ReferenceOr::Item(inner.with_meta(meta)));
         }
         SchemaKind::AllOf { all_of: schemas } => {
             let allof_types = schemas
@@ -215,8 +277,7 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> 
                 .map(|schema| build_type(schema))
                 .collect::<Result<Vec<_>>>()?;
             // It's an 'allOf'. We need to costruct a new type by combining other types together
-            // return combine_types(&allof_types).map(|s| s.with_meta_either(meta))
-            todo!()
+            return Ok(ReferenceOr::Item(TypeInner::AllOf(allof_types).with_meta(meta)))
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -228,15 +289,31 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> 
         ApiType::Integer(_) => TypeInner::I64,
         ApiType::Boolean {} => TypeInner::Bool,
         ApiType::Array(arr) => {
-            // let items = arr.items.clone().unbox();
-            // let inner = build_type(&items, schema_lookup).and_then(|t| t.discard_struct())?;
-            // TypeInner::Array(Box::new(inner))
-            todo!()
+            let items = arr.items.clone().unbox();
+            let innerty = build_type(&items)?;
+            TypeInner::Array(Box::new(innerty))
         }
-        ApiType::Object(obj) => {
-            // return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta))
-            todo!()
-        }
+        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj)?),
     };
     Ok(ReferenceOr::Item(typ.with_meta(meta)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_gather_types() {
+        let yaml = "../examples/petstore-expanded/petstore-expanded.yaml";
+        // let yaml = "../examples/petstore/petstore.yaml";
+        let yaml = fs::read_to_string(yaml).unwrap();
+        let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
+        let types = gather_types(&api).unwrap();
+        for (name, typ) in types {
+            println!("{:?}", name);
+            println!("{:?}", typ);
+        }
+        panic!()
+    }
 }
