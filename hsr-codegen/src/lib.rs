@@ -1157,15 +1157,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_gather_types() {
-        // let yaml = "../examples/petstore-expanded/petstore-expanded.yaml";
-        let yaml = "../examples/petstore/petstore.yaml";
-        let yaml = fs::read_to_string(yaml).unwrap();
-        let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
-        walk::gather_types(&api).unwrap();
-    }
-
     // #[test]
     // fn test_build_types_complex() {
     //     let yaml = "example-api/petstore-expanded.yaml";

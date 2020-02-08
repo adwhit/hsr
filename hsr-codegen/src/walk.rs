@@ -6,8 +6,8 @@ use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{
-    AnySchema, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent, ReferenceOr,
-    Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
+    AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
+    ReferenceOr, Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
@@ -126,12 +126,27 @@ struct Field {
     ty: ReferenceOr<Type>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Method {
+    WithoutBody(MethodWithoutBody),
+    WithBody(MethodWithBody),
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::WithoutBody(method) => method.fmt(f),
+            Self::WithBody(method) => method.fmt(f),
+        }
+    }
+}
+
 pub(crate) fn gather_types(api: &OpenAPI) -> Result<TypeLookup> {
     let dummy = Default::default();
     let components = api.components.as_ref().unwrap_or(&dummy);
     let mut index = TypeLookup::new();
     gather_component_types(&components.schemas, &mut index)?;
-    gather_path_types(&api.paths, &mut index, &components.parameters)?;
+    gather_path_types(&api.paths, &mut index, &components)?;
     Ok(index)
 }
 
@@ -149,7 +164,7 @@ fn gather_component_types(schema_lookup: &SchemaLookup, index: &mut TypeLookup) 
 fn gather_path_types(
     paths: &openapiv3::Paths,
     index: &mut TypeLookup,
-    param_lookup: &ParametersLookup,
+    components: &Components,
 ) -> Result<()> {
     let api_path = ApiPath::default().push("paths");
     for (path, ref_or_item) in paths {
@@ -160,7 +175,7 @@ fn gather_path_types(
         let pathitem = unwrap_ref(&ref_or_item)?;
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
-            gather_operation_types(op, api_path.clone(), index, param_lookup)
+            gather_operation_types(op, api_path.clone(), index, components)
         })?;
     }
 
@@ -205,29 +220,32 @@ fn gather_operation_types(
     op: &Operation,
     path: ApiPath,
     index: &mut TypeLookup,
-    param_lookup: &ParametersLookup,
+    components: &Components,
 ) -> Result<()> {
     for param in &op.parameters {
-        let param = dereference(param, param_lookup)?;
+        let param = dereference(param, &components.parameters)?;
         gather_parameter_types(param, path.clone(), index)?;
     }
-
+    if let Some(reqbody) = &op.request_body {
+        let reqbody = dereference(reqbody, &components.request_bodies)?;
+        gather_content_types(&reqbody.content, path.clone(), index)?
+    }
+    gather_response_types(&op.responses, path.push("reponses"), index, components)?;
     Ok(())
 }
 
 fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLookup) -> Result<()> {
     use Parameter::*;
-    let parameter_data = match param {
-        Query { parameter_data, .. } => parameter_data,
-        Path { parameter_data, .. } => parameter_data,
-        Header { parameter_data, .. } => parameter_data,
-        Cookie { parameter_data, .. } => parameter_data,
+    let (path, parameter_data) = match param {
+        Query { parameter_data, .. } =>  (path.push("query"), parameter_data),
+        Path  { parameter_data, .. } =>   (path.push("path"), parameter_data),
+        Header { parameter_data, .. } => (path.push("header"), parameter_data),
+        Cookie { parameter_data, .. } => (path.push("cookie"), parameter_data),
     };
     let path = path.push(&parameter_data.name);
     match &parameter_data.format {
         ParameterSchemaOrContent::Schema(schema) => {
             let typ = build_type(&schema)?;
-            println!("{:?}", path);
             assert!(index.insert(path, typ).is_none());
         }
         ParameterSchemaOrContent::Content(_) => todo!(),
@@ -235,22 +253,40 @@ fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLook
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Method {
-    WithoutBody(MethodWithoutBody),
-    WithBody(MethodWithBody),
-}
-
-impl fmt::Display for Method {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::WithoutBody(method) => method.fmt(f),
-            Self::WithBody(method) => method.fmt(f),
+fn gather_content_types(
+    content: &IndexMap<String, openapiv3::MediaType>,
+    path: ApiPath,
+    index: &mut TypeLookup,
+) -> Result<()> {
+    for (contentty, mediaty) in content {
+        if let Some(schema) = &mediaty.schema {
+            let path = path.clone().push(contentty);
+            let typ = build_type(schema)?;
+            assert!(index.insert(path, typ).is_none());
         }
     }
+    Ok(())
 }
 
-// TODO this probably doesn't need to accept the whole API object
+fn gather_response_types(
+    resps: &openapiv3::Responses,
+    path: ApiPath,
+    index: &mut TypeLookup,
+    components: &Components,
+) -> Result<()> {
+    if let Some(dflt) = &resps.default {
+        let resp = dereference(dflt, &components.responses)?;
+        let path = path.clone().push("default");
+        gather_content_types(&resp.content, path, index)?;
+    }
+    for (code, resp) in &resps.responses {
+        let path = path.clone().push(code.to_string());
+        let resp = dereference(resp, &components.responses)?;
+        gather_content_types(&resp.content, path, index)?;
+    }
+    Ok(())
+}
+
 fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
@@ -277,7 +313,9 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> 
                 .map(|schema| build_type(schema))
                 .collect::<Result<Vec<_>>>()?;
             // It's an 'allOf'. We need to costruct a new type by combining other types together
-            return Ok(ReferenceOr::Item(TypeInner::AllOf(allof_types).with_meta(meta)))
+            return Ok(ReferenceOr::Item(
+                TypeInner::AllOf(allof_types).with_meta(meta),
+            ));
         }
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
@@ -312,7 +350,7 @@ mod tests {
         let types = gather_types(&api).unwrap();
         for (name, typ) in types {
             println!("{:?}", name);
-            println!("{:?}", typ);
+            // println!("{:?}", typ);
         }
         panic!()
     }
