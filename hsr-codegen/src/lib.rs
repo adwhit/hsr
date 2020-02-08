@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![allow(unused_imports, dead_code)]
 
 use std::fmt;
 use std::fs;
@@ -21,6 +22,7 @@ use quote::quote;
 use regex::Regex;
 
 mod route;
+mod walk;
 
 use route::Route;
 
