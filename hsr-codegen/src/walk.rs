@@ -13,7 +13,7 @@ use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::{
@@ -21,10 +21,10 @@ use crate::{
     ParametersLookup, Result, SchemaLookup,
 };
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ApiPath(Vec<String>);
 
-type TypeLookup = HashMap<ApiPath, ReferenceOr<Type>>;
+type TypeLookup = BTreeMap<ApiPath, ReferenceOr<Type>>;
 
 impl ApiPath {
     fn push(mut self, s: impl Into<String>) -> Self {
@@ -33,11 +33,19 @@ impl ApiPath {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct Type {
     meta: SchemaData,
     typ: TypeInner,
 }
+
+
+impl fmt::Debug for Type {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Type {{ inner: {:?} }}", self.typ)
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
@@ -71,31 +79,21 @@ impl TypeInner {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Struct {
-    fields: Vec<Field>,
+    fields: Vec<Ident>,
 }
 
 impl Struct {
-    fn new(fields: Vec<Field>) -> Result<Struct> {
-        if fields.is_empty() {
-            return Err(Error::EmptyStruct);
-        }
-        // TODO other validation?
-        Ok(Struct { fields })
-    }
-
-    fn from_objlike<T: ObjectLike>(obj: &T) -> Result<Self> {
+    fn from_objlike<T: ObjectLike>(obj: &T, path: ApiPath, index: &mut TypeLookup) -> Result<Self> {
         let mut fields = Vec::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
-            let mut ty = build_type(&schemaref)?;
-            let field = Field {
-                name: name.parse()?,
-                ty,
-            };
-            fields.push(field);
+            let path = path.clone().push(name);
+            let ty = build_type(&schemaref, path.clone(), index)?;
+            assert!(index.insert(path, ty.clone()).is_none());
+            fields.push(name.parse()?);
         }
-        Self::new(fields)
+        Ok(Self { fields })
     }
 }
 
@@ -119,12 +117,6 @@ macro_rules! impl_objlike {
 
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
-
-#[derive(Clone, Debug, PartialEq)]
-struct Field {
-    name: Ident,
-    ty: ReferenceOr<Type>,
-}
 
 #[derive(Debug, Clone, Copy)]
 enum Method {
@@ -155,7 +147,7 @@ fn gather_component_types(schema_lookup: &SchemaLookup, index: &mut TypeLookup) 
     // gather types defined in components
     for (name, schema) in schema_lookup {
         let path = path.clone().push(name);
-        let typ = build_type(&schema)?;
+        let typ = build_type(&schema, path.clone(), index)?;
         assert!(index.insert(path, typ).is_none());
     }
     Ok(())
@@ -245,7 +237,7 @@ fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLook
     let path = path.push(&parameter_data.name);
     match &parameter_data.format {
         ParameterSchemaOrContent::Schema(schema) => {
-            let typ = build_type(&schema)?;
+            let typ = build_type(&schema, path.clone(), index)?;
             assert!(index.insert(path, typ).is_none());
         }
         ParameterSchemaOrContent::Content(_) => todo!(),
@@ -261,7 +253,7 @@ fn gather_content_types(
     for (contentty, mediaty) in content {
         if let Some(schema) = &mediaty.schema {
             let path = path.clone().push(contentty);
-            let typ = build_type(schema)?;
+            let typ = build_type(schema, path.clone(), index)?;
             assert!(index.insert(path, typ).is_none());
         }
     }
@@ -287,7 +279,7 @@ fn gather_response_types(
     Ok(())
 }
 
-fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> {
+fn build_type(ref_or_schema: &ReferenceOr<Schema>, path: ApiPath, index: &mut TypeLookup) -> Result<ReferenceOr<Type>> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
             return Ok(ReferenceOr::Reference {
@@ -303,20 +295,25 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> 
             let inner = if obj.properties.is_empty() {
                 TypeInner::Any
             } else {
-                TypeInner::Struct(Struct::from_objlike(obj)?)
+                TypeInner::Struct(Struct::from_objlike(obj, path, index)?)
             };
             return Ok(ReferenceOr::Item(inner.with_meta(meta)));
         }
         SchemaKind::AllOf { all_of: schemas } => {
             let allof_types = schemas
                 .iter()
-                .map(|schema| build_type(schema))
+                .enumerate()
+                .map(|(ix, schema)| {
+                    let path = path.clone().push(format!("AllOf_{}", ix));
+                    build_type(schema, path, index)
+                })
                 .collect::<Result<Vec<_>>>()?;
             // It's an 'allOf'. We need to costruct a new type by combining other types together
             return Ok(ReferenceOr::Item(
                 TypeInner::AllOf(allof_types).with_meta(meta),
             ));
         }
+        // TODO OneOf
         _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
     };
     let typ = match ty {
@@ -328,10 +325,11 @@ fn build_type(ref_or_schema: &ReferenceOr<Schema>) -> Result<ReferenceOr<Type>> 
         ApiType::Boolean {} => TypeInner::Bool,
         ApiType::Array(arr) => {
             let items = arr.items.clone().unbox();
-            let innerty = build_type(&items)?;
+            let path = path.clone().push("array");
+            let innerty = build_type(&items, path, index)?;
             TypeInner::Array(Box::new(innerty))
         }
-        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj)?),
+        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj, path, index)?),
     };
     Ok(ReferenceOr::Item(typ.with_meta(meta)))
 }
@@ -349,8 +347,7 @@ mod tests {
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
         let types = gather_types(&api).unwrap();
         for (name, typ) in types {
-            println!("{:?}", name);
-            // println!("{:?}", typ);
+            println!("{:?}, {:?}", name, typ);
         }
         panic!()
     }
