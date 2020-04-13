@@ -12,13 +12,13 @@ readme = "README.md"
 
 
 [dependencies]
-futures = { package = "futures", version = "0.3.1" }
+futures = "0.3.4"
 actix-web = { version = "2.0.0", features = ["openssl"] }
 actix-http = "1.0.1"
 awc = "1.0.1"
-actix-rt = "1.0.0"
+actix-rt = "1.1.0"
 url = "2.1.1"
 serde_urlencoded = "0.6.1"
-serde_derive = "1.0.104"
-openssl = "0.10.26"
-async-trait = "0.1.22"
+serde_derive = "1.0.106"
+openssl = "0.10.29"
+async-trait = "0.1.30"

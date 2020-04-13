@@ -9,9 +9,9 @@ hsr-codegen = { path = "../../hsr-codegen" }
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = "1.0.104"
+serde = "1.0.106"
 env_logger = "0.7.1"
-actix-rt = "1.0.0"
+actix-rt = "1.1.0"
 
 [features]
 rustfmt = ["hsr-codegen/rustfmt"]

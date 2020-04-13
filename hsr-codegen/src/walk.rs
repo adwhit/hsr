@@ -1,7 +1,6 @@
 use actix_http::http::StatusCode;
 use derive_more::{Deref, Display, From};
 use either::Either;
-use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
@@ -39,13 +38,11 @@ pub(crate) struct Type {
     typ: TypeInner,
 }
 
-
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Type {{ inner: {:?} }}", self.typ)
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
@@ -229,8 +226,8 @@ fn gather_operation_types(
 fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLookup) -> Result<()> {
     use Parameter::*;
     let (path, parameter_data) = match param {
-        Query { parameter_data, .. } =>  (path.push("query"), parameter_data),
-        Path  { parameter_data, .. } =>   (path.push("path"), parameter_data),
+        Query { parameter_data, .. } => (path.push("query"), parameter_data),
+        Path { parameter_data, .. } => (path.push("path"), parameter_data),
         Header { parameter_data, .. } => (path.push("header"), parameter_data),
         Cookie { parameter_data, .. } => (path.push("cookie"), parameter_data),
     };
@@ -279,7 +276,11 @@ fn gather_response_types(
     Ok(())
 }
 
-fn build_type(ref_or_schema: &ReferenceOr<Schema>, path: ApiPath, index: &mut TypeLookup) -> Result<ReferenceOr<Type>> {
+fn build_type(
+    ref_or_schema: &ReferenceOr<Schema>,
+    path: ApiPath,
+    index: &mut TypeLookup,
+) -> Result<ReferenceOr<Type>> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
             return Ok(ReferenceOr::Reference {

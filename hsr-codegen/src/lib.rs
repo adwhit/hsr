@@ -9,7 +9,6 @@ use std::str::FromStr;
 use actix_http::http::StatusCode;
 use derive_more::{Deref, Display, From};
 use either::Either;
-use failure::Fail;
 use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
 use log::{debug, info};
@@ -20,6 +19,7 @@ use openapiv3::{
 use proc_macro2::{Ident as QIdent, TokenStream};
 use quote::quote;
 use regex::Regex;
+use thiserror::Error;
 
 mod route;
 mod walk;
@@ -40,52 +40,43 @@ type ResponseLookup = IndexMap<String, ReferenceOr<openapiv3::Response>>;
 type ParametersLookup = IndexMap<String, ReferenceOr<openapiv3::Parameter>>;
 type RequestLookup = IndexMap<String, ReferenceOr<openapiv3::RequestBody>>;
 
-#[derive(Debug, From, Fail)]
+#[derive(Debug, Error)]
 pub enum Error {
-    #[fail(display = "IO Error: {}", _0)]
-    Io(std::io::Error),
-    #[fail(display = "Yaml Error: {}", _0)]
-    Yaml(serde_yaml::Error),
-    #[fail(display = "Codegen failed")]
+    #[error("IO Error: {}", _0)]
+    Io(#[from] std::io::Error),
+    #[error("Yaml Error: {}", _0)]
+    Yaml(#[from] serde_yaml::Error),
+    #[error("Codegen failed")]
     CodeGen,
-    #[fail(display = "Bad reference: \"{}\"", _0)]
-    #[from(ignore)]
+    #[error("Bad reference: \"{}\"", _0)]
     BadReference(String),
-    #[fail(display = "Invalid schema: \"{}\"", _0)]
-    #[from(ignore)]
+    #[error("Invalid schema: \"{}\"", _0)]
     BadSchema(String),
-    #[fail(display = "Unexpected reference: \"{}\"", _0)]
-    #[from(ignore)]
+    #[error("Unexpected reference: \"{}\"", _0)]
     UnexpectedReference(String),
-    #[fail(display = "Schema not supported: {:?}", _0)]
+    #[error("Schema not supported: {:?}", _0)]
     UnsupportedKind(SchemaKind),
-    #[fail(display = "Definition is too complex: {:?}", _0)]
+    #[error("Definition is too complex: {:?}", _0)]
     TooComplex(Schema),
-    #[fail(display = "Empty struct")]
+    #[error("Empty struct")]
     EmptyStruct,
-    #[fail(display = "Rust does not support structural typing")]
+    #[error("Rust does not support structural typing")]
     NotStructurallyTyped,
-    #[fail(display = "Path is malformed: {}", _0)]
-    #[from(ignore)]
+    #[error("Path is malformed: {}", _0)]
     MalformedPath(String),
-    #[fail(display = "No operatio Join Private Q&A n id given for route {}", _0)]
-    #[from(ignore)]
+    #[error("No operatio Join Private Q&A n id given for route {}", _0)]
     NoOperationId(String),
-    #[fail(display = "TODO: {}", _0)]
-    #[from(ignore)]
+    #[error("TODO: {}", _0)]
     Todo(String),
-    #[fail(display = "{} is not a valid identifier", _0)]
-    #[from(ignore)]
+    #[error("{} is not a valid identifier", _0)]
     BadIdentifier(String),
-    #[fail(display = "{} is not a valid type name", _0)]
-    #[from(ignore)]
+    #[error("{} is not a valid type name", _0)]
     BadTypeName(String),
-    #[fail(display = "Malformed codegen")]
+    #[error("Malformed codegen")]
     BadCodegen,
-    #[fail(display = "status code '{}' not supported", _0)]
+    #[error("status code '{}' not supported", _0)]
     BadStatusCode(ApiStatusCode),
-    #[fail(display = "Duplicate name: {}", _0)]
-    #[from(ignore)]
+    #[error("Duplicate name: {}", _0)]
     DuplicateName(String),
 }
 
@@ -343,7 +334,7 @@ enum PathSegment {
 
 #[derive(Clone, Debug)]
 struct RoutePath {
-    segments: Vec<PathSegment>
+    segments: Vec<PathSegment>,
 }
 
 impl fmt::Display for RoutePath {
@@ -367,7 +358,7 @@ impl fmt::Display for RoutePath {
 impl RoutePath {
     /// Check a path is well-formed and break it into its respective `PathSegment`s
     fn analyse(path: &str) -> Result<RoutePath> {
-    // TODO lazy static
+        // TODO lazy static
         let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
         let param_re = Regex::new(r#"^\{([[:alpha:]]+)\}$"#).unwrap();
 
@@ -396,8 +387,14 @@ impl RoutePath {
         Ok(RoutePath { segments })
     }
 
-    fn path_args(&self) -> impl Iterator<Item=&str> {
-        self.segments.iter().filter_map(|s| if let PathSegment::Parameter(ref s) = s { Some(s.as_str()) } else { None })
+    fn path_args(&self) -> impl Iterator<Item = &str> {
+        self.segments.iter().filter_map(|s| {
+            if let PathSegment::Parameter(ref s) = s {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
     }
 
     fn build_template(&self) -> String {
@@ -415,7 +412,6 @@ impl RoutePath {
         }
         path
     }
-
 }
 
 fn gather_routes(
