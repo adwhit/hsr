@@ -1,34 +1,56 @@
-use actix_http::http::StatusCode;
-use derive_more::{Deref, Display, From};
-use either::Either;
-use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
-use log::{debug, info};
+use inflector::Inflector;
+use log::debug;
 use openapiv3::{
     AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
-    ReferenceOr, Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
+    ReferenceOr, Schema, SchemaData, SchemaKind, Type as ApiType,
 };
-use proc_macro2::{Ident as QIdent, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 use regex::Regex;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Deref;
 
 use crate::{
-    dereference, unwrap_ref, Error, Ident, Map, MethodWithBody, MethodWithoutBody,
-    ParametersLookup, Result, SchemaLookup,
+    dereference, unwrap_ref, Error, Ident, Map, MethodWithBody, MethodWithoutBody, Result,
+    SchemaLookup,
 };
+use proc_macro2::Ident as QIdent;
+
+pub(crate) type TypeLookup = BTreeMap<ApiPath, ReferenceOr<Type>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ApiPath(Vec<String>);
 
-type TypeLookup = BTreeMap<ApiPath, ReferenceOr<Type>>;
-
 impl ApiPath {
+    pub(crate) fn from_reference(refr: &str) -> Result<Self> {
+        let rx = Regex::new("^#/components/schemas/([[:alnum:]]+)$").unwrap();
+        let cap = rx
+            .captures(refr)
+            .ok_or_else(|| Error::BadReference(refr.into()))?;
+        let name = cap.get(1).unwrap();
+        Ok(ApiPath::default()
+            .push("components")
+            .push("schemas")
+            .push(name.as_str()))
+    }
+
     fn push(mut self, s: impl Into<String>) -> Self {
         self.0.push(s.into());
         self
+    }
+
+    pub(crate) fn canonicalize(&self) -> QIdent {
+        let parts: Vec<&str> = self.0.iter().map(String::as_str).collect();
+        let parts = match &parts[..] {
+            // strip out not-useful components path
+            ["components", "schemas", rest @ ..] => &rest,
+            rest => rest,
+        };
+        let joined = parts.join(" ");
+        crate::ident(joined.to_class_case())
     }
 }
 
@@ -44,13 +66,22 @@ impl fmt::Debug for Type {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, derive_more::Display)]
+enum Primitive {
+    #[display(fmt = "String")]
+    String,
+    #[display(fmt = "f64")]
+    F64,
+    #[display(fmt = "i64")]
+    I64,
+    #[display(fmt = "bool")]
+    Bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
     // primitives
-    String,
-    F64,
-    I64,
-    Bool,
+    Primitive(Primitive),
     // An array of of some inner type
     Array(Box<ReferenceOr<Type>>),
     // A type which is nullable
@@ -320,19 +351,141 @@ fn build_type(
     let typ = match ty {
         // TODO make enums from string
         // TODO fail on other validation
-        ApiType::String(_) => TypeInner::String,
-        ApiType::Number(_) => TypeInner::F64,
-        ApiType::Integer(_) => TypeInner::I64,
-        ApiType::Boolean {} => TypeInner::Bool,
+        ApiType::String(_) => TypeInner::Primitive(Primitive::String),
+        ApiType::Number(_) => TypeInner::Primitive(Primitive::F64),
+        ApiType::Integer(_) => TypeInner::Primitive(Primitive::I64),
+        ApiType::Boolean {} => TypeInner::Primitive(Primitive::Bool),
         ApiType::Array(arr) => {
             let items = arr.items.clone().unbox();
             let path = path.clone().push("array");
-            let innerty = build_type(&items, path, index)?;
+            let innerty = build_type(&items, path.clone(), index)?;
+            assert!(index.insert(path, innerty.clone()).is_none());
             TypeInner::Array(Box::new(innerty))
         }
         ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj, path, index)?),
     };
     Ok(ReferenceOr::Item(typ.with_meta(meta)))
+}
+
+/// Generate code that defines a `struct` or `type` alias for each object found
+/// in the OpenAPI definition
+pub(crate) fn generate_rust_types(types: &TypeLookup) -> Result<TokenStream> {
+    let mut tokens = TokenStream::new();
+    for (typepath, typ) in types {
+        println!("{:?}, {:?}", typepath, typ);
+        let def = generate_rust_type(typepath, typ, types)?;
+        tokens.extend(def);
+    }
+    Ok(tokens)
+}
+
+/// Generate code that defines a `struct` or `type` alias for each object found
+/// in the OpenAPI definition
+fn generate_rust_type(
+    typepath: &ApiPath,
+    typ: &ReferenceOr<Type>,
+    lookup: &TypeLookup,
+) -> Result<TokenStream> {
+    let name = typepath.canonicalize();
+    let def = match dbg!(typ) {
+        ReferenceOr::Reference { reference } => {
+            let refs = ApiPath::from_reference(reference)?;
+            let refs = refs.canonicalize();
+            quote! {
+                type #name = #refs;
+            }
+        }
+        ReferenceOr::Item(typ) => {
+            let descr = typ.meta.description.as_ref().map(|s| s.as_str());
+            use TypeInner as T;
+            match &typ.typ {
+                T::Any => {
+                    quote! {
+                        #descr
+                        type #name = serde_json::Value;
+                    }
+                }
+                T::AllOf(parts) => {
+                    let strukt = combine_types(typepath, parts, lookup)?;
+                    let typ =
+                        ReferenceOr::Item(TypeInner::Struct(strukt).with_meta(typ.meta.clone()));
+                    // Defer to struct impl
+                    generate_rust_type(typepath, &typ, lookup)?
+                }
+                T::OneOf(_) => todo!(),
+                T::Primitive(p) => {
+                    let id = crate::ident(p);
+                    quote! {
+                        #descr
+                        type #name = #id;
+                    }
+                }
+                T::Array(_) => {
+                    let inner_path = typepath.clone().push("array");
+                    assert!(lookup.contains_key(&inner_path));
+                    let inner_path = inner_path.canonicalize();
+                    quote! {
+                        #descr
+                        type #name = Vec<#inner_path>;
+                    }
+                }
+                T::Option(inner) => todo!(),
+                T::Struct(strukt) => {
+                    let fieldnames = &strukt.fields;
+                    let fields: Vec<QIdent> = strukt
+                        .fields
+                        .iter()
+                        .map(|field| typepath.clone().push(field.deref()).canonicalize())
+                        .collect();
+                    quote! {
+                        #descr
+                        pub struct #name {
+                            #(#fieldnames: #fields);*
+                        }
+                    }
+                }
+            }
+        }
+    };
+    Ok(def)
+}
+
+fn combine_types(
+    path: &ApiPath,
+    parts: &[ReferenceOr<Type>],
+    lookup: &TypeLookup,
+) -> Result<Struct> {
+    fn deref<'a>(item: &'a ReferenceOr<Type>, lookup: &'a TypeLookup) -> Result<&'a Type> {
+        match item {
+            ReferenceOr::Reference { reference } => {
+                let path = ApiPath::from_reference(reference)?;
+                lookup
+                    .get(&path)
+                    .ok_or_else(|| Error::BadReference(reference.clone()))
+                    .and_then(|refr| deref(refr, lookup))
+            }
+            ReferenceOr::Item(typ) => Ok(typ),
+        }
+    }
+
+    let mut base = Set::new();
+    for (ix, part) in parts.iter().enumerate() {
+        let typ = deref(part, lookup)?;
+        match &typ.typ {
+            TypeInner::Struct(strukt) => {
+                for field in &strukt.fields {
+                    if !base.insert(field) {
+                        // duplicate field
+                        return Err(Error::DuplicateName(field.to_string()));
+                    }
+                }
+            }
+            _ => todo!(),
+        }
+    }
+    Ok(Struct {
+        fields: base.into_iter().cloned().collect(),
+    })
 }
 
 #[cfg(test)]
@@ -346,10 +499,14 @@ mod tests {
         // let yaml = "../examples/petstore/petstore.yaml";
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
+
+        // TODO assert length
         let types = gather_types(&api).unwrap();
-        for (name, typ) in types {
-            println!("{:?}, {:?}", name, typ);
-        }
+
+        dbg!(&types);
+
+        let generated = generate_rust_types(&types).unwrap();
+        println!("{}", generated);
         panic!()
     }
 }
