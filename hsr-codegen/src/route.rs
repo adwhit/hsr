@@ -235,33 +235,6 @@ impl Route {
         }
     }
 
-    /// A query string is a group of key=value pairs. We handle this by collecting
-    /// the query args and generating a type which holds them all.
-    /// e.g. a string ?foo=10&bar=hello could be deserialized by a struct
-    /// `struct EndpointQueryArg { foo: int, bar: String }`
-    pub fn generate_query_type(&self) -> Option<TokenStream> {
-        let fields: Vec<Field> = self
-            .query_args
-            .iter()
-            .map(|(ident, ty)| Field {
-                name: ident.clone(),
-                ty: ty.clone(),
-            })
-            .collect();
-        let name = self.generate_query_type_name()?;
-        let descr = format!(
-            "Type representing the query string of `{}`",
-            self.operation_id
-        );
-        let def = Struct::new(fields).unwrap();
-        Some(generate_struct_def(
-            &name,
-            Some(descr.as_str()),
-            &def,
-            Visibility::Private,
-        ))
-    }
-
     /// Fetch the name of the return type identified as an error, if it exists.
     /// If there are multiple error return types, this will give the name of an enum
     /// which can hold any of them

@@ -147,20 +147,6 @@ fn extract_ref_name(refr: &str) -> Result<TypeName> {
     TypeName::new(parts[3].to_string())
 }
 
-/// Traverse the '#/components/schema' section of the spec and prepare type
-/// definitions from the descriptions
-fn gather_component_types(schema_lookup: &SchemaLookup) -> Result<TypeMap<StructOrType>> {
-    let mut typs = TypeMap::new();
-    // gather types defined in components
-    for (name, schema) in schema_lookup {
-        info!("Processing schema: {}", name);
-        let typename = TypeName::new(name.clone())?;
-        let typ = build_type(&schema, &schema_lookup)?;
-        assert!(typs.insert(typename, typ).is_none());
-    }
-    Ok(typs)
-}
-
 fn api_trait_name(api: &OpenAPI) -> TypeName {
     TypeName::new(format!("{}Api", api.info.title.to_camel_case())).unwrap()
 }
@@ -745,30 +731,6 @@ impl quote::ToTokens for Visibility {
     }
 }
 
-/// Generate code that defines a `struct` or `type` alias for each object described
-/// in the OpenAPI 'components' section.
-fn generate_rust_component_types(typs: &TypeMap<StructOrType>) -> TokenStream {
-    let mut tokens = TokenStream::new();
-    for (typename, typ) in typs {
-        let descr = typ.meta.description.as_ref().map(|s| s.as_str());
-        let def = match &typ.typ {
-            Either::Left(strukt) => {
-                generate_struct_def(typename, descr, strukt, Visibility::Public)
-            }
-            Either::Right(typ) => {
-                let descr = descr.map(doc_comment);
-                // make a type alias
-                quote! {
-                    #descr
-                    pub type #typename = #typ;
-                }
-            }
-        };
-        tokens.extend(def);
-    }
-    tokens
-}
-
 fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
     let mut tokens = TokenStream::new();
     for (_path, routes) in routemap {
@@ -816,33 +778,6 @@ fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) ->
         }
     }
     quote! {#dispatchers}
-}
-
-fn generate_struct_def(
-    name: &TypeName,
-    descr: Option<&str>,
-    Struct { fields }: &Struct,
-    vis: Visibility,
-) -> TokenStream {
-    let name = ident(name);
-    let fieldname = fields.iter().map(|f| &f.name);
-    let fieldtype = fields.iter().map(|f| &f.ty);
-    let fielddescr = fields
-        .iter()
-        .map(|f| f.ty.meta.description.as_ref().map(doc_comment));
-    let descr = descr.as_ref().map(doc_comment);
-    let derives = get_derive_tokens();
-    let toks = quote! {
-        #derives
-        #descr
-        #vis struct #name {
-            #(
-                #fielddescr
-                pub #fieldname: #fieldtype
-            ),*
-        }
-    };
-    toks
 }
 
 fn build_type(
@@ -1051,11 +986,6 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 
     let trait_name = api_trait_name(&api);
 
-    debug!("Gather types");
-
-    // Retrieve a map of types defined in the schema section
-    let typs = gather_component_types(&schema_lookup)?;
-
     debug!("Gather routes");
     // collect Routes from the Paths object.
     let routes = gather_routes(
@@ -1066,15 +996,12 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         &req_body_lookup,
     )?;
 
-    debug!("Generate component types");
-    // Generate type definitions for the schema components
-    let rust_component_types = generate_rust_component_types(&typs);
-
-    debug!("Generate route types");
-    // Generate type definitions that were found within the routes
-    let rust_route_types = generate_rust_route_types(&routes);
-
-    let types = walk::gather_types(&api);
+    // Collect types found within the api
+    debug!("Gather types");
+    let type_lookup = walk::gather_types(&api)?;
+    // Generate type definitions
+    debug!("Generate API types");
+    let rust_types = walk::generate_rust_types(&type_lookup)?;
 
     debug!("Generate API trait");
     let rust_trait = generate_rust_interface(&routes, &api.info.title, &trait_name);
@@ -1112,9 +1039,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         #[allow(dead_code)]
         use __imports::*;
 
-        // TypeInner definitions
-        #rust_component_types
-        #rust_route_types
+        // Type definitions
+        #rust_types
         // Interface definition
         #rust_trait
         // Dispatcher definitions

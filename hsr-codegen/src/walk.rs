@@ -103,6 +103,14 @@ impl TypeInner {
     fn with_meta(self, meta: SchemaData) -> Type {
         Type { meta, typ: self }
     }
+
+    /// Attach metadata to
+    fn no_meta(self) -> Type {
+        Type {
+            meta: SchemaData::default(),
+            typ: self,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -242,34 +250,55 @@ fn gather_operation_types(
     index: &mut TypeLookup,
     components: &Components,
 ) -> Result<()> {
+    use Parameter::*;
+
+    let mut queries = Set::new();
+    let mut paths = Set::new();
+
     for param in &op.parameters {
+        // for each parameter we gather the type
+        // but we also need to collect the Queries and Paths to make the
+        // parent Query and Path types
+        let path = path.clone();
         let param = dereference(param, &components.parameters)?;
-        gather_parameter_types(param, path.clone(), index)?;
+        let (path, parameter_data) = match param {
+            Query { parameter_data, .. } => {
+                queries.insert(&parameter_data.name);
+                (path.push("query"), parameter_data)
+            }
+            Path { parameter_data, .. } => {
+                paths.insert(&parameter_data.name);
+                (path.push("path"), parameter_data)
+            }
+            Header { parameter_data, .. } => (path.push("header"), parameter_data),
+            Cookie { parameter_data, .. } => (path.push("cookie"), parameter_data),
+        };
+        let path = path.push(&parameter_data.name);
+        match &parameter_data.format {
+            ParameterSchemaOrContent::Schema(schema) => {
+                let typ = build_type(&schema, path.clone(), index)?;
+                assert!(index.insert(path, typ).is_none());
+            }
+            ParameterSchemaOrContent::Content(_) => todo!(),
+        }
     }
+
+    if !queries.is_empty() {
+        let path = path.clone().push("query");
+        let fields = queries
+            .iter()
+            .map(|s| s.parse())
+            .collect::<Result<Vec<_>>>()?;
+        let typ = TypeInner::Struct(Struct { fields }).no_meta();
+        assert!(index.insert(path, ReferenceOr::Item(typ)).is_none());
+    }
+
     if let Some(reqbody) = &op.request_body {
         let reqbody = dereference(reqbody, &components.request_bodies)?;
         gather_content_types(&reqbody.content, path.clone(), index)?
     }
-    gather_response_types(&op.responses, path.push("reponses"), index, components)?;
-    Ok(())
-}
 
-fn gather_parameter_types(param: &Parameter, path: ApiPath, index: &mut TypeLookup) -> Result<()> {
-    use Parameter::*;
-    let (path, parameter_data) = match param {
-        Query { parameter_data, .. } => (path.push("query"), parameter_data),
-        Path { parameter_data, .. } => (path.push("path"), parameter_data),
-        Header { parameter_data, .. } => (path.push("header"), parameter_data),
-        Cookie { parameter_data, .. } => (path.push("cookie"), parameter_data),
-    };
-    let path = path.push(&parameter_data.name);
-    match &parameter_data.format {
-        ParameterSchemaOrContent::Schema(schema) => {
-            let typ = build_type(&schema, path.clone(), index)?;
-            assert!(index.insert(path, typ).is_none());
-        }
-        ParameterSchemaOrContent::Content(_) => todo!(),
-    }
+    gather_response_types(&op.responses, path.push("reponses"), index, components)?;
     Ok(())
 }
 
@@ -437,8 +466,10 @@ fn generate_rust_type(
                         .iter()
                         .map(|field| typepath.clone().push(field.deref()).canonicalize())
                         .collect();
+                    let derives = crate::get_derive_tokens();
                     quote! {
                         #descr
+                        #derives
                         pub struct #name {
                             #(#fieldnames: #fields),*
                         }
