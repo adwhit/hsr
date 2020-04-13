@@ -440,7 +440,7 @@ fn generate_rust_type(
                     quote! {
                         #descr
                         pub struct #name {
-                            #(#fieldnames: #fields);*
+                            #(#fieldnames: #fields),*
                         }
                     }
                 }
@@ -499,14 +499,16 @@ mod tests {
         // let yaml = "../examples/petstore/petstore.yaml";
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
-
-        // TODO assert length
         let types = gather_types(&api).unwrap();
 
-        dbg!(&types);
+        #[allow(unused_mut)]
+        let mut code = generate_rust_types(&types).unwrap().to_string();
 
-        let generated = generate_rust_types(&types).unwrap();
-        println!("{}", generated);
+        #[cfg(feature = "rustfmt")]
+        {
+            code = crate::prettify_code(code).unwrap();
+        }
+        println!("{}", code);
         panic!()
     }
 }

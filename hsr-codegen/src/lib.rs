@@ -63,7 +63,7 @@ pub enum Error {
     NotStructurallyTyped,
     #[error("Path is malformed: {}", _0)]
     MalformedPath(String),
-    #[error("No operatio Join Private Q&A n id given for route {}", _0)]
+    #[error("No operation id given for route {}", _0)]
     NoOperationId(String),
     #[error("TODO: {}", _0)]
     Todo(String),
