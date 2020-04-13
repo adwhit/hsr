@@ -341,35 +341,81 @@ enum PathSegment {
     Parameter(String),
 }
 
-/// Check a path is well-formed and break it into its respective `PathSegment`s
-fn analyse_path(path: &str) -> Result<Vec<PathSegment>> {
-    // TODO lazy static
-    let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
-    let param_re = Regex::new(r#"^\{([[:alpha:]]+)\}$"#).unwrap();
+#[derive(Clone, Debug)]
+struct RoutePath {
+    segments: Vec<PathSegment>
+}
 
-    if path.is_empty() || !path.starts_with('/') {
-        return Err(Error::MalformedPath(path.to_string()));
-    }
-
-    let mut segments = Vec::new();
-
-    for segment in path.split('/').skip(1) {
-        // ignore trailing slashes
-        if segment.is_empty() {
-            continue;
+impl fmt::Display for RoutePath {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut path = String::new();
+        for segment in &self.segments {
+            match segment {
+                PathSegment::Literal(p) => {
+                    path.push('/');
+                    path.push_str(&p);
+                }
+                PathSegment::Parameter(_) => {
+                    path.push_str("/{}");
+                }
+            }
         }
-        if literal_re.is_match(segment) {
-            segments.push(PathSegment::Literal(segment.to_string()))
-        } else if let Some(seg) = param_re.captures(segment) {
-            segments.push(PathSegment::Parameter(
-                seg.get(1).unwrap().as_str().to_string(),
-            ))
-        } else {
+        write!(f, "{}", path)
+    }
+}
+
+impl RoutePath {
+    /// Check a path is well-formed and break it into its respective `PathSegment`s
+    fn analyse(path: &str) -> Result<RoutePath> {
+    // TODO lazy static
+        let literal_re = Regex::new("^[[:alpha:]]+$").unwrap();
+        let param_re = Regex::new(r#"^\{([[:alpha:]]+)\}$"#).unwrap();
+
+        if path.is_empty() || !path.starts_with('/') {
             return Err(Error::MalformedPath(path.to_string()));
         }
+
+        let mut segments = Vec::new();
+
+        for segment in path.split('/').skip(1) {
+            // ignore trailing slashes
+            if segment.is_empty() {
+                continue;
+            }
+            if literal_re.is_match(segment) {
+                segments.push(PathSegment::Literal(segment.to_string()))
+            } else if let Some(seg) = param_re.captures(segment) {
+                segments.push(PathSegment::Parameter(
+                    seg.get(1).unwrap().as_str().to_string(),
+                ))
+            } else {
+                return Err(Error::MalformedPath(path.to_string()));
+            }
+        }
+        // TODO check for duplicate parameter names
+        Ok(RoutePath { segments })
     }
-    // TODO check for duplicates
-    Ok(segments)
+
+    fn path_args(&self) -> impl Iterator<Item=&str> {
+        self.segments.iter().filter_map(|s| if let PathSegment::Parameter(ref s) = s { Some(s.as_str()) } else { None })
+    }
+
+    fn build_template(&self) -> String {
+        let mut path = String::new();
+        for segment in &self.segments {
+            match segment {
+                PathSegment::Literal(p) => {
+                    path.push('/');
+                    path.push_str(&p);
+                }
+                PathSegment::Parameter(_) => {
+                    path.push_str("/{}");
+                }
+            }
+        }
+        path
+    }
+
 }
 
 fn gather_routes(

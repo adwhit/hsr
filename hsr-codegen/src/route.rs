@@ -4,12 +4,7 @@ use openapiv3::{OpenAPI, ReferenceOr, StatusCode as ApiStatusCode};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::{
-    analyse_path, build_type, dereference, doc_comment, error_variant_from_status_code,
-    generate_struct_def, get_derive_tokens, get_type_of_response, ident, Error, Field, IdMap,
-    Ident, Method, MethodWithBody, MethodWithoutBody, ParametersLookup, PathSegment, RequestLookup,
-    ResponseLookup, Result, SchemaLookup, Struct, Type, TypeInner, TypeName, Visibility,
-};
+use crate::*;
 
 /// Route contains all the information necessary to contruct the API
 ///
@@ -19,7 +14,7 @@ pub struct Route {
     summary: Option<String>,
     operation_id: Ident,
     method: Method,
-    path_segments: Vec<PathSegment>,
+    path: RoutePath,
     path_args: Vec<(Ident, Type)>,
     query_args: IdMap<Type>,
     return_ty: (StatusCode, Option<Type>),
@@ -39,20 +34,11 @@ impl Route {
         response_lookup: &ResponseLookup,
         parameters_lookup: &ParametersLookup,
     ) -> Result<Route> {
-        let path_segments = analyse_path(path)?;
-        let expected_path_args: usize = path_segments
-            .iter()
-            .map(|p| {
-                if let PathSegment::Parameter(_) = p {
-                    1
-                } else {
-                    0
-                }
-            })
-            .sum();
+        let path = RoutePath::analyse(path)?;
+        let expected_path_args = path.path_args().count();
         let operation_id = match operation_id {
             Some(ref op) => op.parse(),
-            None => Err(Error::NoOperationId(path.into())),
+            None => Err(Error::NoOperationId(path.to_string())),
         }?;
         let mut path_args = vec![];
         let mut query_args = IdMap::new();
@@ -163,7 +149,7 @@ impl Route {
             operation_id,
             path_args,
             query_args,
-            path_segments,
+            path,
             method,
             return_ty,
             err_tys,
@@ -323,22 +309,6 @@ impl Route {
         }
     }
 
-    fn build_path_template(&self) -> String {
-        let mut path = String::new();
-        for segment in &self.path_segments {
-            match segment {
-                PathSegment::Literal(p) => {
-                    path.push('/');
-                    path.push_str(&p);
-                }
-                PathSegment::Parameter(_) => {
-                    path.push_str("/{}");
-                }
-            }
-        }
-        path
-    }
-
     pub fn generate_client_impl(&self) -> TokenStream {
         let opid = &self.operation_id;
         let err_ty = &self.return_err_ty();
@@ -351,7 +321,7 @@ impl Route {
             .map(|(id, ty)| quote! { #id: #ty })
             .collect();
         let path_names = self.path_args.iter().map(|(id, _ty)| id);
-        let path_template = self.build_path_template();
+        let path_template = self.path.build_template();
 
         let queries: Vec<_> = self
             .query_args
