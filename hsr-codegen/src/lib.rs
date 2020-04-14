@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+use std::convert::TryFrom;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -8,8 +9,8 @@ use std::str::FromStr;
 use actix_http::http::StatusCode;
 use derive_more::{Deref, Display};
 use either::Either;
+use heck::{CamelCase, SnakeCase};
 use indexmap::{IndexMap, IndexSet as Set};
-use inflector::Inflector;
 use log::{debug, info};
 use openapiv3::{
     AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaData, SchemaKind,
@@ -102,53 +103,8 @@ fn dereference<'a, T>(refr: &'a ReferenceOr<T>, lookup: &'a Map<ReferenceOr<T>>)
     }
 }
 
-/// Check that a reference string exists within the API
-fn validate_schema_ref<'a>(
-    refr: &'a str,
-    schema_lookup: &'a SchemaLookup,
-) -> Result<(TypeName, SchemaData)> {
-    fn validate_schema_ref_depth<'a>(
-        refr: &'a str,
-        lookup: &'a SchemaLookup,
-        depth: u32,
-    ) -> Result<(TypeName, SchemaData)> {
-        if depth > 20 {
-            // circular reference!!
-            return Err(Error::BadReference(refr.to_string()));
-        }
-        let name = extract_ref_name(refr)?;
-        // Do the lookup. We are just checking the ref points to 'something'
-        let schema_or_ref = lookup
-            .get(&name.to_string())
-            .ok_or(Error::BadReference(refr.to_string()))?;
-        // recursively dereference
-        match schema_or_ref {
-            ReferenceOr::Reference { reference } => {
-                let (_, meta) = validate_schema_ref_depth(reference, lookup, depth + 1)?;
-                Ok((name, meta))
-            }
-            ReferenceOr::Item(schema) => Ok((name, schema.schema_data.clone())),
-        }
-    }
-    validate_schema_ref_depth(refr, schema_lookup, 0)
-}
-
-/// Extract the type name from the reference
-fn extract_ref_name(refr: &str) -> Result<TypeName> {
-    // This only works with form '#/components/schema/<NAME>'
-    let err = Error::BadReference(refr.to_string());
-    if !refr.starts_with("#") {
-        return Err(err);
-    }
-    let parts: Vec<&str> = refr.split('/').collect();
-    if !(parts.len() == 4 && parts[1] == "components" && parts[2] == "schemas") {
-        return Err(err);
-    }
-    TypeName::new(parts[3].to_string())
-}
-
 fn api_trait_name(api: &OpenAPI) -> TypeName {
-    TypeName::new(format!("{}Api", api.info.title.to_camel_case())).unwrap()
+    TypeName::try_from(format!("{}Api", api.info.title.to_camel_case())).unwrap()
 }
 
 /// Separately represents methods which CANNOT take a body (GET, HEAD, OPTIONS, TRACE)
@@ -227,38 +183,6 @@ enum MethodWithBody {
     Patch,
 }
 
-/// Build hsr Type from OpenAPI Response
-fn get_type_of_response(
-    ref_or_resp: &ReferenceOr<openapiv3::Response>,
-    response_lookup: &ResponseLookup,
-    schema_lookup: &SchemaLookup,
-) -> Result<Option<Type>> {
-    let resp = dereference(ref_or_resp, response_lookup)?;
-    if !resp.headers.is_empty() {
-        todo!("response headers not supported")
-    }
-    if !resp.links.is_empty() {
-        todo!("response links not supported")
-    }
-    if resp.content.is_empty() {
-        Ok(None)
-    } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
-        todo!("content type must be 'application/json'")
-    } else {
-        let ref_or_schema = resp
-            .content
-            .get("application/json")
-            .unwrap()
-            .schema
-            .as_ref()
-            .ok_or_else(|| todo!("Media type does not contain schema"))
-            .unwrap();
-        Ok(Some(
-            build_type(&ref_or_schema, schema_lookup).and_then(|s| s.discard_struct())?,
-        ))
-    }
-}
-
 /// A string which is a valid identifier (snake_case)
 ///
 /// Do not construct directly, instead use str.parse
@@ -271,8 +195,10 @@ impl FromStr for Ident {
         // Check the identifier string in valid.
         // We use snake_case internally, but additionally allow mixedCase identifiers
         // to be passed, since this is common in JS world
-        if val.is_snake_case() || val.is_camel_case() {
-            Ok(Ident(val.to_snake_case()))
+        let snake = val.to_snake_case();
+        let camel = val.to_camel_case();
+        if val == snake || val == camel {
+            Ok(Ident(snake))
         } else {
             Err(Error::BadIdentifier(val.to_string()))
         }
@@ -286,15 +212,17 @@ impl quote::ToTokens for Ident {
     }
 }
 
-/// A string which is a valid name for type (CamelCase)
+/// A string which is a valid name for type (ClassCase)
 ///
 /// Do not construct directly, instead use `new`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct TypeName(String);
 
-impl TypeName {
-    fn new(val: String) -> Result<Self> {
-        if val == val.to_camel_case() {
+impl TryFrom<String> for TypeName {
+    type Error = Error;
+    fn try_from(val: String) -> Result<Self> {
+        let camel = val.to_camel_case();
+        if val == camel {
             Ok(TypeName(val))
         } else {
             Err(Error::BadTypeName(val))
@@ -534,146 +462,6 @@ fn gather_routes(
     Ok(routes)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct TypeWithMeta<T> {
-    meta: SchemaData,
-    typ: T,
-}
-
-impl StructOrType {
-    fn discard_struct(self) -> Result<Type> {
-        match self.typ {
-            Either::Right(typ) => Ok(TypeWithMeta {
-                meta: self.meta,
-                typ,
-            }),
-            Either::Left(_) => return Err(Error::NotStructurallyTyped),
-        }
-    }
-}
-
-impl Type {
-    fn to_option(self) -> Self {
-        Self {
-            meta: self.meta.clone(),
-            typ: TypeInner::Option(Box::new(self)),
-        }
-    }
-}
-
-// Out general strategy is to recursively traverse the openapi object and gather all the
-// types together. We separate out the types into Struct and TypeInner. A Struct represents
-// a 'raw', unnamed object. It just informs us about the fields within. A bare Struct may not
-// be instantiated directly, because it doesn't have a name.
-type Type = TypeWithMeta<TypeInner>;
-type StructOrType = TypeWithMeta<Either<Struct, TypeInner>>;
-
-#[derive(Debug, Clone, PartialEq)]
-enum TypeInner {
-    // primitives
-    String,
-    F64,
-    I64,
-    Bool,
-    // An array of of some inner type
-    Array(Box<Type>),
-    // A type which is nullable
-    Option(Box<Type>),
-    // Any type. Could be anything! Probably a user-error
-    Any,
-    // Some type which is defined elsewhere, we only have the name.
-    // Probably comes from a reference
-    Named(TypeName),
-}
-
-impl TypeInner {
-    /// Attach metadata to
-    fn with_meta_either(self, meta: SchemaData) -> StructOrType {
-        TypeWithMeta {
-            meta,
-            typ: Either::Right(self),
-        }
-    }
-}
-
-impl quote::ToTokens for Type {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.typ.to_tokens(tokens)
-    }
-}
-
-impl quote::ToTokens for TypeInner {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        use TypeInner::*;
-        let toks = match self {
-            String => quote! { String },
-            F64 => quote! { f64 },
-            I64 => quote! { i64 },
-            Bool => quote! { bool },
-            Array(inner) => {
-                quote! { Vec<#inner> }
-            }
-            Option(inner) => {
-                quote! { Option<#inner> }
-            }
-            Named(name) => {
-                quote! { #name }
-            }
-            // TODO handle Any properly
-            Any => unimplemented!(),
-        };
-        toks.to_tokens(tokens);
-    }
-}
-
-impl Struct {
-    fn with_meta_either(self, meta: SchemaData) -> StructOrType {
-        TypeWithMeta {
-            meta,
-            typ: Either::Left(self),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct Struct {
-    fields: Vec<Field>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct Field {
-    name: Ident,
-    ty: Type,
-}
-
-impl Struct {
-    fn new(fields: Vec<Field>) -> Result<Struct> {
-        if fields.is_empty() {
-            return Err(Error::EmptyStruct);
-        }
-        // TODO other validation?
-        Ok(Struct { fields })
-    }
-
-    fn from_objlike<T: ObjectLike>(obj: &T, schema_lookup: &SchemaLookup) -> Result<Self> {
-        let mut fields = Vec::new();
-        let required_args: Set<String> = obj.required().iter().cloned().collect();
-        for (name, schemaref) in obj.properties() {
-            let schemaref = schemaref.clone().unbox();
-            let mut ty = build_type(&schemaref, schema_lookup).and_then(|s| s.discard_struct())?;
-            if !required_args.contains(name) {
-                ty = ty.to_option();
-            }
-            let field = Field {
-                name: name.parse()?,
-                ty,
-            };
-            fields.push(field);
-        }
-        Self::new(fields)
-    }
-}
-
 trait ObjectLike {
     fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
     fn required(&self) -> &[String];
@@ -697,8 +485,8 @@ impl_objlike!(AnySchema);
 
 fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
     code.canonical_reason()
-        .and_then(|reason| TypeName::new(reason.to_camel_case()).ok())
-        .unwrap_or(TypeName::new(format!("E{}", code.as_str())).unwrap())
+        .and_then(|reason| TypeName::try_from(reason.to_camel_case()).ok())
+        .unwrap_or(TypeName::try_from(format!("E{}", code.as_str())).unwrap())
 }
 
 fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
@@ -729,21 +517,6 @@ impl quote::ToTokens for Visibility {
             Visibility::Private => (),
         }
     }
-}
-
-fn generate_rust_route_types(routemap: &Map<Vec<Route>>) -> TokenStream {
-    let mut tokens = TokenStream::new();
-    for (_path, routes) in routemap {
-        for route in routes {
-            // Construct the error type, if necessary
-            let mb_enum_def = route.generate_error_enum_def();
-            tokens.extend(mb_enum_def);
-            // construct the query type, if necessary
-            let mb_query_ty = route.generate_query_type();
-            tokens.extend(mb_query_ty)
-        }
-    }
-    tokens
 }
 
 fn generate_rust_interface(
@@ -778,83 +551,6 @@ fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) ->
         }
     }
     quote! {#dispatchers}
-}
-
-fn build_type(
-    ref_or_schema: &ReferenceOr<Schema>,
-    schema_lookup: &SchemaLookup,
-) -> Result<StructOrType> {
-    let schema = match ref_or_schema {
-        ReferenceOr::Reference { reference } => {
-            let (name, meta) = validate_schema_ref(reference, schema_lookup)?;
-            return Ok(TypeInner::Named(name).with_meta_either(meta));
-        }
-        ReferenceOr::Item(item) => item,
-    };
-    let meta = schema.schema_data.clone();
-    let ty = match &schema.schema_kind {
-        SchemaKind::Type(ty) => ty,
-        SchemaKind::Any(obj) => {
-            if obj.properties.is_empty() {
-                return Ok(TypeInner::Any.with_meta_either(meta));
-            } else {
-                return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta));
-            }
-        }
-        SchemaKind::AllOf { all_of: schemas } => {
-            let allof_types = schemas
-                .iter()
-                .map(|schema| build_type(schema, schema_lookup))
-                .collect::<Result<Vec<_>>>()?;
-            // It's an 'allOf'. We need to costruct a new type by combining other types together
-            // return combine_types(&allof_types).map(|s| s.with_meta_either(meta))
-            todo!()
-        }
-        _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
-    };
-    let typ = match ty {
-        // TODO make enums from string
-        // TODO fail on other validation
-        ApiType::String(_) => TypeInner::String,
-        ApiType::Number(_) => TypeInner::F64,
-        ApiType::Integer(_) => TypeInner::I64,
-        ApiType::Boolean {} => TypeInner::Bool,
-        ApiType::Array(arr) => {
-            let items = arr.items.clone().unbox();
-            let inner = build_type(&items, schema_lookup).and_then(|t| t.discard_struct())?;
-            TypeInner::Array(Box::new(inner))
-        }
-        ApiType::Object(obj) => {
-            return Struct::from_objlike(obj, schema_lookup).map(|s| s.with_meta_either(meta))
-        }
-    };
-    Ok(typ.with_meta_either(meta))
-}
-
-#[allow(dead_code)]
-fn combine_types(
-    types: &[StructOrType],
-    lookup: &Map<ReferenceOr<StructOrType>>,
-) -> Result<Struct> {
-    let mut fields = IndexMap::new();
-    for typ in types {
-        let strukt = match &typ.typ {
-            Either::Left(strukt) => strukt,
-            // FIXME problem - we can have a Type::Named which we need to dereference :/
-            Either::Right(_other) => {
-                return Err(Error::Todo(
-                    "Only object-like types allowed in AllOf types".to_string(),
-                ))
-            }
-        };
-        for field in &strukt.fields {
-            if let Some(_) = fields.insert(&field.name, field) {
-                return Err(Error::DuplicateName(field.name.to_string()));
-            }
-        }
-    }
-    let fields: Vec<_> = fields.values().cloned().cloned().collect();
-    Struct::new(fields)
 }
 
 fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {

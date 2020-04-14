@@ -1,9 +1,12 @@
 use actix_http::http::StatusCode;
-use inflector::Inflector;
+use heck::{CamelCase, SnakeCase};
 use openapiv3::{ReferenceOr, StatusCode as ApiStatusCode};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use std::convert::TryFrom;
+
+use crate::walk::Type;
 use crate::*;
 
 /// Route contains all the information necessary to contruct the API
@@ -231,7 +234,10 @@ impl Route {
         if self.query_args.is_empty() {
             None
         } else {
-            Some(TypeName::new(format!("{}Query", &*self.operation_id.to_camel_case())).unwrap())
+            Some(
+                TypeName::try_from(format!("{}Query", &*self.operation_id.to_camel_case()))
+                    .unwrap(),
+            )
         }
     }
 
@@ -239,7 +245,7 @@ impl Route {
     /// If there are multiple error return types, this will give the name of an enum
     /// which can hold any of them
     fn return_err_ty(&self) -> TypeName {
-        TypeName::new(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap()
+        TypeName::try_from(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap()
     }
 
     /// The name of the return type. If none are found, returns '()'.

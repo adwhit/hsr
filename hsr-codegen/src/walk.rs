@@ -1,5 +1,5 @@
+use heck::CamelCase;
 use indexmap::{IndexMap, IndexSet as Set};
-use inflector::Inflector;
 use log::debug;
 use openapiv3::{
     AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
@@ -10,12 +10,13 @@ use quote::quote;
 use regex::Regex;
 
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::fmt;
 use std::ops::Deref;
 
 use crate::{
     dereference, unwrap_ref, Error, Ident, Map, MethodWithBody, MethodWithoutBody, Result,
-    SchemaLookup,
+    SchemaLookup, TypeName,
 };
 use proc_macro2::Ident as QIdent;
 
@@ -42,7 +43,7 @@ impl ApiPath {
         self
     }
 
-    pub(crate) fn canonicalize(&self) -> QIdent {
+    pub(crate) fn canonicalize(&self) -> TypeName {
         let parts: Vec<&str> = self.0.iter().map(String::as_str).collect();
         let parts = match &parts[..] {
             // strip out not-useful components path
@@ -50,7 +51,7 @@ impl ApiPath {
             rest => rest,
         };
         let joined = parts.join(" ");
-        crate::ident(joined.to_class_case())
+        TypeName::try_from(joined.to_camel_case()).unwrap()
     }
 }
 
@@ -302,6 +303,25 @@ fn gather_operation_types(
     Ok(())
 }
 
+fn gather_response_type(
+    resp: &openapiv3::Response,
+    path: ApiPath,
+    index: &mut TypeLookup,
+) -> Result<()> {
+    if !resp.headers.is_empty() {
+        todo!("response headers not supported")
+    }
+    if !resp.links.is_empty() {
+        todo!("response links not supported")
+    }
+    if resp.content.is_empty() {
+        return Ok(());
+    } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
+        todo!("content type must be 'application/json'")
+    }
+    gather_content_types(&resp.content, path, index)
+}
+
 fn gather_content_types(
     content: &IndexMap<String, openapiv3::MediaType>,
     path: ApiPath,
@@ -326,12 +346,12 @@ fn gather_response_types(
     if let Some(dflt) = &resps.default {
         let resp = dereference(dflt, &components.responses)?;
         let path = path.clone().push("default");
-        gather_content_types(&resp.content, path, index)?;
+        gather_response_type(&resp, path, index)?;
     }
     for (code, resp) in &resps.responses {
         let path = path.clone().push(code.to_string());
         let resp = dereference(resp, &components.responses)?;
-        gather_content_types(&resp.content, path, index)?;
+        gather_response_type(&resp, path, index)?;
     }
     Ok(())
 }
@@ -461,7 +481,7 @@ fn generate_rust_type(
                 T::Option(inner) => todo!(),
                 T::Struct(strukt) => {
                     let fieldnames = &strukt.fields;
-                    let fields: Vec<QIdent> = strukt
+                    let fields: Vec<TypeName> = strukt
                         .fields
                         .iter()
                         .map(|field| typepath.clone().push(field.deref()).canonicalize())
