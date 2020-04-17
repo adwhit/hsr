@@ -1,5 +1,5 @@
 use heck::CamelCase;
-use indexmap::{IndexMap, IndexSet as Set};
+use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
     AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
@@ -15,8 +15,9 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, unwrap_ref, Error, Ident, Map, MethodWithBody, MethodWithoutBody, Result,
-    SchemaLookup, TypeName,
+    dereference, unwrap_ref, Error, Ident, MethodWithBody, MethodWithoutBody, Result,
+    SchemaLookup, TypeName, RoutePath,
+    route::{Route}
 };
 use proc_macro2::Ident as QIdent;
 
@@ -52,6 +53,13 @@ impl ApiPath {
         };
         let joined = parts.join(" ");
         TypeName::try_from(joined.to_camel_case()).unwrap()
+    }
+}
+
+impl std::fmt::Display for ApiPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        let joined = self.0.join(".");
+        write!(f, "{}", joined)
     }
 }
 
@@ -120,14 +128,14 @@ struct Struct {
 }
 
 impl Struct {
-    fn from_objlike<T: ObjectLike>(obj: &T, path: ApiPath, index: &mut TypeLookup) -> Result<Self> {
+    fn from_objlike<T: ObjectLike>(obj: &T, path: ApiPath, type_index: &mut TypeLookup) -> Result<Self> {
         let mut fields = Vec::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
             let path = path.clone().push(name);
-            let ty = build_type(&schemaref, path.clone(), index)?;
-            assert!(index.insert(path, ty.clone()).is_none());
+            let ty = build_type(&schemaref, path.clone(), type_index)?;
+            assert!(type_index.insert(path, ty.clone()).is_none());
             fields.push(name.parse()?);
         }
         Ok(Self { fields })
@@ -135,14 +143,14 @@ impl Struct {
 }
 
 trait ObjectLike {
-    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
+    fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>>;
     fn required(&self) -> &[String];
 }
 
 macro_rules! impl_objlike {
     ($obj:ty) => {
         impl ObjectLike for $obj {
-            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
+            fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>> {
                 &self.properties
             }
             fn required(&self) -> &[String] {
@@ -170,45 +178,50 @@ impl fmt::Display for Method {
     }
 }
 
-pub(crate) fn gather_types(api: &OpenAPI) -> Result<TypeLookup> {
+pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Route>>)> {
+    let mut type_index = TypeLookup::new();
     let dummy = Default::default();
     let components = api.components.as_ref().unwrap_or(&dummy);
-    let mut index = TypeLookup::new();
-    gather_component_types(&components.schemas, &mut index)?;
-    gather_path_types(&api.paths, &mut index, &components)?;
-    Ok(index)
+    walk_component_schemas(&components.schemas, &mut type_index)?;
+    let routes = walk_paths(&api.paths, &mut type_index, &components)?;
+    Ok((type_index, routes))
 }
 
-fn gather_component_types(schema_lookup: &SchemaLookup, index: &mut TypeLookup) -> Result<()> {
+fn walk_component_schemas(schema_lookup: &SchemaLookup, type_index: &mut TypeLookup) -> Result<()> {
     let path = ApiPath::default().push("components").push("schemas");
     // gather types defined in components
     for (name, schema) in schema_lookup {
         let path = path.clone().push(name);
-        let typ = build_type(&schema, path.clone(), index)?;
-        assert!(index.insert(path, typ).is_none());
+        let typ = build_type(&schema, path.clone(), type_index)?;
+        assert!(type_index.insert(path, typ).is_none());
     }
     Ok(())
 }
 
-fn gather_path_types(
+fn walk_paths(
     paths: &openapiv3::Paths,
-    index: &mut TypeLookup,
+    type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<()> {
+) -> Result<Map<String, Vec<Route>>> {
+    let mut routes: Map<String, Vec<Route>> = Map::new();
     let api_path = ApiPath::default().push("paths");
     for (path, ref_or_item) in paths {
+
         let api_path = api_path.clone().push(path);
+        let route_path = RoutePath::analyse(path)?;
 
         debug!("Gathering types for path: {:?}", path);
         // TODO lookup
         let pathitem = unwrap_ref(&ref_or_item)?;
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
-            gather_operation_types(op, api_path.clone(), index, components)
+            let route = walk_operation(op, api_path.clone(), &route_path, &pathitem.parameters, type_index, components)?;
+            routes.entry(path.clone()).or_default().push(route);
+            Ok(())
         })?;
     }
 
-    Ok(())
+    Ok(routes)
 }
 
 fn apply_over_operations<F>(pathitem: &openapiv3::PathItem, mut func: F) -> Result<()>
@@ -245,68 +258,121 @@ where
     Ok(())
 }
 
-fn gather_operation_types(
+fn walk_operation(
     op: &Operation,
     path: ApiPath,
-    index: &mut TypeLookup,
+    route_path: &RoutePath,
+    parameters: &[ReferenceOr<Parameter>],
+    type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<()> {
+) -> Result<Route> {
     use Parameter::*;
 
-    let mut queries = Set::new();
-    let mut paths = Set::new();
+    let expected_path_arg_ct = route_path.path_args().count();
+    let operation_id = match op.operation_id {
+        Some(ref op) => op.parse(),
+        None => Err(Error::NoOperationId(path.to_string())),
+    }?;
+
+    let mut path_args = Map::new();
+    let mut query_params = Map::new();
 
     for param in &op.parameters {
         // for each parameter we gather the type
         // but we also need to collect the Queries and Paths to make the
         // parent Query and Path types
-        let path = path.clone();
         let param = dereference(param, &components.parameters)?;
-        let (path, parameter_data) = match param {
-            Query { parameter_data, .. } => {
-                queries.insert(&parameter_data.name);
-                (path.push("query"), parameter_data)
-            }
+        match param {
             Path { parameter_data, .. } => {
-                paths.insert(&parameter_data.name);
-                (path.push("path"), parameter_data)
+                match parameter_data.format {
+                    ParameterSchemaOrContent::Schema(schema) => {
+                        let path = path.clone().push("path").push(&parameter_data.name);
+                        let name: Ident = parameter_data.name.parse()?;
+                        path_args.insert(name, path);
+                        let typ = build_type(&schema, path.clone(), type_index)?;
+                        assert!(type_index.insert(path, typ).is_none());
+                    }
+                    ParameterSchemaOrContent::Content(_) => todo!(),
+                }
             }
-            Header { parameter_data, .. } => (path.push("header"), parameter_data),
-            Cookie { parameter_data, .. } => (path.push("cookie"), parameter_data),
+            Query { parameter_data, .. } => {
+                match parameter_data.format {
+                    ParameterSchemaOrContent::Schema(schema) => {
+                        let path = path.clone().push("query").push(&parameter_data.name);
+                        let name: Ident = parameter_data.name.parse()?;
+                        query_params.insert(name, path);
+                        let typ = build_type(&schema, path.clone(), type_index)?;
+                        assert!(type_index.insert(path, typ).is_none());
+                    }
+                    ParameterSchemaOrContent::Content(_) => todo!(),
+                }
+            }
+            Header { .. } => todo!(),
+            Cookie { .. } => todo!(),
         };
-        let path = path.push(&parameter_data.name);
-        match &parameter_data.format {
-            ParameterSchemaOrContent::Schema(schema) => {
-                let typ = build_type(&schema, path.clone(), index)?;
-                assert!(index.insert(path, typ).is_none());
-            }
-            ParameterSchemaOrContent::Content(_) => todo!(),
-        }
     }
 
-    if !queries.is_empty() {
-        let path = path.clone().push("query");
-        let fields = queries
-            .iter()
-            .map(|s| s.parse())
-            .collect::<Result<Vec<_>>>()?;
-        let typ = TypeInner::Struct(Struct { fields }).no_meta();
-        assert!(index.insert(path, ReferenceOr::Item(typ)).is_none());
-    }
+    {
+        // construct a query param type, if any
+        // This will be used as an Extractor in actix-web
+        let fields: Vec<Ident> = query_params
+            .keys()
+            .cloned()
+            .collect();
+        if !fields.is_empty() {
+            let typ = TypeInner::Struct(Struct { fields }).no_meta();
+            let exists = type_index.insert(path, ReferenceOr::Item(typ)).is_some();
+            assert!(!exists);
+        }
+    };
 
     if let Some(reqbody) = &op.request_body {
         let reqbody = dereference(reqbody, &components.request_bodies)?;
-        gather_content_types(&reqbody.content, path.clone(), index)?
+        walk_contents(&reqbody.content, path.clone(), type_index)?
     }
 
-    gather_response_types(&op.responses, path.push("reponses"), index, components)?;
+    walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
     Ok(())
 }
 
-fn gather_response_type(
+fn walk_contents(
+    content: &Map<String, openapiv3::MediaType>,
+    path: ApiPath,
+    type_index: &mut TypeLookup,
+) -> Result<()> {
+    for (contentty, mediaty) in content {
+        if let Some(schema) = &mediaty.schema {
+            let path = path.clone().push(contentty);
+            let typ = build_type(schema, path.clone(), type_index)?;
+            assert!(type_index.insert(path, typ).is_none());
+        }
+    }
+    Ok(())
+}
+
+fn walk_responses(
+    resps: &openapiv3::Responses,
+    path: ApiPath,
+    type_index: &mut TypeLookup,
+    components: &Components,
+) -> Result<()> {
+    if let Some(dflt) = &resps.default {
+        let resp = dereference(dflt, &components.responses)?;
+        let path = path.clone().push("default");
+        walk_response(&resp, path, type_index)?;
+    }
+    for (code, resp) in &resps.responses {
+        let path = path.clone().push(code.to_string());
+        let resp = dereference(resp, &components.responses)?;
+        walk_response(&resp, path, type_index)?;
+    }
+    Ok(())
+}
+
+fn walk_response(
     resp: &openapiv3::Response,
     path: ApiPath,
-    index: &mut TypeLookup,
+    type_index: &mut TypeLookup,
 ) -> Result<()> {
     if !resp.headers.is_empty() {
         todo!("response headers not supported")
@@ -319,47 +385,14 @@ fn gather_response_type(
     } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
         todo!("content type must be 'application/json'")
     }
-    gather_content_types(&resp.content, path, index)
+    walk_contents(&resp.content, path, type_index)
 }
 
-fn gather_content_types(
-    content: &IndexMap<String, openapiv3::MediaType>,
-    path: ApiPath,
-    index: &mut TypeLookup,
-) -> Result<()> {
-    for (contentty, mediaty) in content {
-        if let Some(schema) = &mediaty.schema {
-            let path = path.clone().push(contentty);
-            let typ = build_type(schema, path.clone(), index)?;
-            assert!(index.insert(path, typ).is_none());
-        }
-    }
-    Ok(())
-}
-
-fn gather_response_types(
-    resps: &openapiv3::Responses,
-    path: ApiPath,
-    index: &mut TypeLookup,
-    components: &Components,
-) -> Result<()> {
-    if let Some(dflt) = &resps.default {
-        let resp = dereference(dflt, &components.responses)?;
-        let path = path.clone().push("default");
-        gather_response_type(&resp, path, index)?;
-    }
-    for (code, resp) in &resps.responses {
-        let path = path.clone().push(code.to_string());
-        let resp = dereference(resp, &components.responses)?;
-        gather_response_type(&resp, path, index)?;
-    }
-    Ok(())
-}
 
 fn build_type(
     ref_or_schema: &ReferenceOr<Schema>,
     path: ApiPath,
-    index: &mut TypeLookup,
+    type_index: &mut TypeLookup,
 ) -> Result<ReferenceOr<Type>> {
     let schema = match ref_or_schema {
         ReferenceOr::Reference { reference } => {
@@ -376,7 +409,7 @@ fn build_type(
             let inner = if obj.properties.is_empty() {
                 TypeInner::Any
             } else {
-                TypeInner::Struct(Struct::from_objlike(obj, path, index)?)
+                TypeInner::Struct(Struct::from_objlike(obj, path, type_index)?)
             };
             return Ok(ReferenceOr::Item(inner.with_meta(meta)));
         }
@@ -386,7 +419,7 @@ fn build_type(
                 .enumerate()
                 .map(|(ix, schema)| {
                     let path = path.clone().push(format!("AllOf_{}", ix));
-                    build_type(schema, path, index)
+                    build_type(schema, path, type_index)
                 })
                 .collect::<Result<Vec<_>>>()?;
             // It's an 'allOf'. We need to costruct a new type by combining other types together
@@ -407,11 +440,11 @@ fn build_type(
         ApiType::Array(arr) => {
             let items = arr.items.clone().unbox();
             let path = path.clone().push("array");
-            let innerty = build_type(&items, path.clone(), index)?;
-            assert!(index.insert(path, innerty.clone()).is_none());
+            let innerty = build_type(&items, path.clone(), type_index)?;
+            assert!(type_index.insert(path, innerty.clone()).is_none());
             TypeInner::Array(Box::new(innerty))
         }
-        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj, path, index)?),
+        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj, path, type_index)?),
     };
     Ok(ReferenceOr::Item(typ.with_meta(meta)))
 }

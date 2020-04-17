@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![allow(unused_imports)]
 
 use std::convert::TryFrom;
 use std::fmt;
@@ -10,7 +11,7 @@ use actix_http::http::StatusCode;
 use derive_more::{Deref, Display};
 use either::Either;
 use heck::{CamelCase, SnakeCase};
-use indexmap::{IndexMap, IndexSet as Set};
+use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{
     AnySchema, ObjectType, OpenAPI, ReferenceOr, Schema, SchemaData, SchemaKind,
@@ -32,13 +33,12 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
-type Map<T> = IndexMap<String, T>;
-type IdMap<T> = IndexMap<Ident, T>;
-type TypeMap<T> = IndexMap<TypeName, T>;
-type SchemaLookup = IndexMap<String, ReferenceOr<Schema>>;
-type ResponseLookup = IndexMap<String, ReferenceOr<openapiv3::Response>>;
-type ParametersLookup = IndexMap<String, ReferenceOr<openapiv3::Parameter>>;
-type RequestLookup = IndexMap<String, ReferenceOr<openapiv3::RequestBody>>;
+type IdMap<T> = Map<Ident, T>;
+type TypeMap<T> = Map<TypeName, T>;
+type SchemaLookup = Map<String, ReferenceOr<Schema>>;
+type ResponseLookup = Map<String, ReferenceOr<openapiv3::Response>>;
+type ParametersLookup = Map<String, ReferenceOr<openapiv3::Parameter>>;
+type RequestLookup = Map<String, ReferenceOr<openapiv3::RequestBody>>;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -93,7 +93,7 @@ fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
 }
 
 /// Fetch reference target via a lookup
-fn dereference<'a, T>(refr: &'a ReferenceOr<T>, lookup: &'a Map<ReferenceOr<T>>) -> Result<&'a T> {
+fn dereference<'a, T>(refr: &'a ReferenceOr<T>, lookup: &'a Map<String, ReferenceOr<T>>) -> Result<&'a T> {
     match refr {
         ReferenceOr::Reference { reference } => lookup
             .get(reference)
@@ -115,7 +115,7 @@ enum Method {
     WithBody {
         method: MethodWithBody,
         /// The expected body payload, if any
-        body_type: Option<Type>,
+        body_type: Option<TypeName>,
     },
 }
 
@@ -129,7 +129,7 @@ impl fmt::Display for Method {
 }
 
 impl Method {
-    fn body_type(&self) -> Option<&Type> {
+    fn body_type(&self) -> Option<&TypeName> {
         match self {
             Method::WithoutBody(_)
             | Method::WithBody {
@@ -244,7 +244,7 @@ enum PathSegment {
 }
 
 #[derive(Clone, Debug)]
-struct RoutePath {
+pub(crate) struct RoutePath {
     segments: Vec<PathSegment>,
 }
 
@@ -332,7 +332,7 @@ fn gather_routes(
     response_lookup: &ResponseLookup,
     param_lookup: &ParametersLookup,
     req_body_lookup: &RequestLookup,
-) -> Result<Map<Vec<Route>>> {
+) -> Result<Map<String, Vec<Route>>> {
     let mut routes = Map::new();
     debug!("Found paths: {:?}", paths.keys().collect::<Vec<_>>());
     for (path, pathitem) in paths {
@@ -463,14 +463,14 @@ fn gather_routes(
 }
 
 trait ObjectLike {
-    fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>>;
+    fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>>;
     fn required(&self) -> &[String];
 }
 
 macro_rules! impl_objlike {
     ($obj:ty) => {
         impl ObjectLike for $obj {
-            fn properties(&self) -> &Map<ReferenceOr<Box<Schema>>> {
+            fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>> {
                 &self.properties
             }
             fn required(&self) -> &[String] {
@@ -520,7 +520,7 @@ impl quote::ToTokens for Visibility {
 }
 
 fn generate_rust_interface(
-    routes: &Map<Vec<Route>>,
+    routes: &Map<String, Vec<Route>>,
     title: &str,
     trait_name: &TypeName,
 ) -> TokenStream {
@@ -543,7 +543,7 @@ fn generate_rust_interface(
     }
 }
 
-fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_dispatchers(routes: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let mut dispatchers = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -553,7 +553,7 @@ fn generate_rust_dispatchers(routes: &Map<Vec<Route>>, trait_name: &TypeName) ->
     quote! {#dispatchers}
 }
 
-fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let resources: Vec<_> = routemap
         .iter()
         .map(|(path, routes)| {
@@ -618,7 +618,7 @@ fn generate_rust_server(routemap: &Map<Vec<Route>>, trait_name: &TypeName) -> To
     server
 }
 
-fn generate_rust_client(routes: &Map<Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_client(routes: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
     let mut method_impls = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -694,7 +694,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 
     // Collect types found within the api
     debug!("Gather types");
-    let type_lookup = walk::gather_types(&api)?;
+    let (type_lookup, routes) = walk::walk_api(&api)?;
     // Generate type definitions
     debug!("Generate API types");
     let rust_types = walk::generate_rust_types(&type_lookup)?;
