@@ -107,6 +107,18 @@ fn api_trait_name(api: &OpenAPI) -> TypeName {
     TypeName::try_from(format!("{}Api", api.info.title.to_camel_case())).unwrap()
 }
 
+#[derive(Debug, Clone, Copy, derive_more::Display)]
+enum RawMethod {
+    Get,
+    Post,
+    Delete,
+    Put,
+    Patch,
+    Options,
+    Head,
+    Trace
+}
+
 /// Separately represents methods which CANNOT take a body (GET, HEAD, OPTIONS, TRACE)
 /// and those which MAY take a body (POST, PATCH, PUT, DELETE)
 #[derive(Debug, Clone)]
@@ -129,6 +141,32 @@ impl fmt::Display for Method {
 }
 
 impl Method {
+    fn from_raw(method: RawMethod, body_type: Option<TypeName>) -> Result<Self> {
+        use RawMethod as R;
+        use Method as M;
+        use MethodWithBody::*;
+        use MethodWithoutBody::*;
+        match method {
+            R::Get | R::Head | R::Options | R::Trace => {
+                if body_type.is_some() {
+                    return Err(Error::Todo("eh".into()))
+                }
+            }
+            _ => {}
+        }
+        let meth = match method {
+            R::Get => M::WithoutBody(Get),
+            R::Head => M::WithoutBody(Head),
+            R::Trace => M::WithoutBody(Trace),
+            R::Options => M::WithoutBody(Options),
+            R::Post => M::WithBody { method: Post, body_type },
+            R::Patch => M::WithBody { method: Patch, body_type },
+            R::Put => M::WithBody { method: Put, body_type },
+            R::Delete => M::WithBody { method: Delete, body_type },
+        };
+        Ok(meth)
+    }
+
     fn body_type(&self) -> Option<&TypeName> {
         match self {
             Method::WithoutBody(_)

@@ -12,17 +12,17 @@ use crate::*;
 /// Route contains all the information necessary to contruct the API
 ///
 /// If it has been constructed, the route is logically sound
-#[derive(Debug, Clone)]
-pub struct Route {
+#[derive(Debug, Clone, derive_more::Constructor)]
+pub(crate) struct Route {
     summary: Option<String>,
     operation_id: Ident,
     method: Method,
     path: RoutePath,
     path_args: Map<Ident, ApiPath>,
     query_params: Map<Ident, ApiPath>,
-    return_ty: (StatusCode, Option<ApiPath>),
-    err_tys: Vec<(StatusCode, Option<ApiPath>)>,
-    default_err_ty: Option<ApiPath>,
+    return_ty: (StatusCode, Option<TypeName>),
+    err_tys: Vec<(StatusCode, Option<TypeName>)>,
+    default_err_ty: Option<TypeName>,
 }
 
 impl Route {

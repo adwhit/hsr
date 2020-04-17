@@ -3,6 +3,7 @@ use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
     AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
+    StatusCode as ApiStatusCode,
     ReferenceOr, Schema, SchemaData, SchemaKind, Type as ApiType,
 };
 use proc_macro2::TokenStream;
@@ -16,8 +17,8 @@ use std::ops::Deref;
 
 use crate::{
     dereference, unwrap_ref, Error, Ident, MethodWithBody, MethodWithoutBody, Result,
-    SchemaLookup, TypeName, RoutePath,
-    route::{Route}
+    SchemaLookup, TypeName, RoutePath, StatusCode,
+    route::Route, RawMethod, Method
 };
 use proc_macro2::Ident as QIdent;
 
@@ -163,21 +164,6 @@ macro_rules! impl_objlike {
 impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
-#[derive(Debug, Clone, Copy)]
-enum Method {
-    WithoutBody(MethodWithoutBody),
-    WithBody(MethodWithBody),
-}
-
-impl fmt::Display for Method {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::WithoutBody(method) => method.fmt(f),
-            Self::WithBody(method) => method.fmt(f),
-        }
-    }
-}
-
 pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Route>>)> {
     let mut type_index = TypeLookup::new();
     let dummy = Default::default();
@@ -215,7 +201,7 @@ fn walk_paths(
         let pathitem = unwrap_ref(&ref_or_item)?;
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
-            let route = walk_operation(op, api_path.clone(), &route_path, &pathitem.parameters, type_index, components)?;
+            let route = walk_operation(op, method, api_path.clone(), &route_path, &pathitem.parameters, type_index, components)?;
             routes.entry(path.clone()).or_default().push(route);
             Ok(())
         })?;
@@ -226,40 +212,39 @@ fn walk_paths(
 
 fn apply_over_operations<F>(pathitem: &openapiv3::PathItem, mut func: F) -> Result<()>
 where
-    F: FnMut(&Operation, Method) -> Result<()>,
+    F: FnMut(&Operation, RawMethod) -> Result<()>,
 {
-    use Method::*;
-    use MethodWithBody::*;
-    use MethodWithoutBody::*;
+    use RawMethod::*;
     if let Some(ref op) = pathitem.get {
-        func(op, WithoutBody(Get))?;
+        func(op, Get)?;
     }
     if let Some(ref op) = pathitem.options {
-        func(op, WithoutBody(Options))?;
+        func(op, Options)?;
     }
     if let Some(ref op) = pathitem.head {
-        func(op, WithoutBody(Head))?;
+        func(op, Head)?;
     }
     if let Some(ref op) = pathitem.trace {
-        func(op, WithoutBody(Trace))?;
+        func(op, Trace)?;
     }
     if let Some(ref op) = pathitem.post {
-        func(op, WithBody(Post))?;
+        func(op, Post)?;
     }
     if let Some(ref op) = pathitem.put {
-        func(op, WithBody(Put))?;
+        func(op, Put)?;
     }
     if let Some(ref op) = pathitem.patch {
-        func(op, WithBody(Patch))?;
+        func(op, Patch)?;
     }
     if let Some(ref op) = pathitem.delete {
-        func(op, WithBody(Delete))?;
+        func(op, Delete)?;
     }
     Ok(())
 }
 
 fn walk_operation(
     op: &Operation,
+    method: RawMethod,
     path: ApiPath,
     route_path: &RoutePath,
     parameters: &[ReferenceOr<Parameter>],
@@ -284,11 +269,11 @@ fn walk_operation(
         let param = dereference(param, &components.parameters)?;
         match param {
             Path { parameter_data, .. } => {
-                match parameter_data.format {
+                match &parameter_data.format {
                     ParameterSchemaOrContent::Schema(schema) => {
                         let path = path.clone().push("path").push(&parameter_data.name);
                         let name: Ident = parameter_data.name.parse()?;
-                        path_args.insert(name, path);
+                        path_args.insert(name, path.clone());
                         let typ = build_type(&schema, path.clone(), type_index)?;
                         assert!(type_index.insert(path, typ).is_none());
                     }
@@ -296,11 +281,11 @@ fn walk_operation(
                 }
             }
             Query { parameter_data, .. } => {
-                match parameter_data.format {
+                match &parameter_data.format {
                     ParameterSchemaOrContent::Schema(schema) => {
                         let path = path.clone().push("query").push(&parameter_data.name);
                         let name: Ident = parameter_data.name.parse()?;
-                        query_params.insert(name, path);
+                        query_params.insert(name, path.clone());
                         let typ = build_type(&schema, path.clone(), type_index)?;
                         assert!(type_index.insert(path, typ).is_none());
                     }
@@ -321,33 +306,46 @@ fn walk_operation(
             .collect();
         if !fields.is_empty() {
             let typ = TypeInner::Struct(Struct { fields }).no_meta();
-            let exists = type_index.insert(path, ReferenceOr::Item(typ)).is_some();
+            let exists = type_index.insert(path.clone(), ReferenceOr::Item(typ)).is_some();
             assert!(!exists);
         }
     };
 
-    if let Some(reqbody) = &op.request_body {
+    let body_path: Option<TypeName> = op.request_body.as_ref().map::<Result<Option<TypeName>>, _>(|reqbody| {
+        let path = path.clone().push("request_body");
         let reqbody = dereference(reqbody, &components.request_bodies)?;
-        walk_contents(&reqbody.content, path.clone(), type_index)?
-    }
+        let path: Option<TypeName> = walk_contents(&reqbody.content, path.clone(), type_index)?;
+        Ok(path)
+    }).transpose()?.flatten();
 
-    walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
-    Ok(())
+    let method = Method::from_raw(method, body_path)?;
+
+    let (return_ty, err_tys, default_err_ty) = walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
+
+
+    let route = Route::new(op.summary.clone(), operation_id, method, route_path.clone(), path_args, query_params, return_ty, err_tys, default_err_ty);
+
+    Ok(route)
 }
 
 fn walk_contents(
     content: &Map<String, openapiv3::MediaType>,
     path: ApiPath,
     type_index: &mut TypeLookup,
-) -> Result<()> {
-    for (contentty, mediaty) in content {
-        if let Some(schema) = &mediaty.schema {
-            let path = path.clone().push(contentty);
-            let typ = build_type(schema, path.clone(), type_index)?;
-            assert!(type_index.insert(path, typ).is_none());
-        }
+) -> Result<Option<TypeName>>{
+    if content.len() > 1 {
+        todo!("Can't have more than one content type");
     }
-    Ok(())
+    content.iter().next().and_then(|(contentty, mediaty)| {
+        if contentty != "application/json" {
+            todo!("Content other than application/json not supported")
+        }
+        mediaty.schema.as_ref().map(|schema| {
+            let typ = build_type(schema, path.clone(), type_index)?;
+            assert!(type_index.insert(path.clone(), typ).is_none());
+            Ok(path.canonicalize())
+        })
+    }).transpose()
 }
 
 fn walk_responses(
@@ -355,35 +353,67 @@ fn walk_responses(
     path: ApiPath,
     type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<()> {
-    if let Some(dflt) = &resps.default {
+) -> Result<((StatusCode, Option<TypeName>), Vec<(StatusCode, Option<TypeName>)>, Option<TypeName>)> {
+
+    let ((success_code, success_resp), errors) = {
+        // Check responses are valid status codes
+        // We only support 2XX (success) and 4XX (error) codes (but not ranges)
+        let mut success = None;
+        let mut errors = vec![];
+        for (code, resp) in resps.responses.iter() {
+            let status = match code {
+                ApiStatusCode::Code(v) => {
+                    StatusCode::from_u16(*v).map_err(|_| Error::BadStatusCode(code.clone()))
+                }
+                _ => return Err(Error::BadStatusCode(code.clone())),
+            }?;
+            if status.is_success() {
+                if success.replace((status, resp)).is_some() {
+                    return Err(Error::Todo("Expected exactly one 'success' status".into()));
+                }
+            } else if status.is_client_error() {
+                errors.push((status, resp))
+            } else {
+                return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()));
+            }
+        }
+        let success = success.ok_or_else(||
+                                         Error::Todo("No success code specified".into())
+        )?;
+        (success, errors)
+    };
+
+    let success = {
+        let path = path.clone().push(success_code.to_string());
+        let resp = dereference(success_resp, &components.responses)?;
+        (success_code, walk_response(resp, path, type_index)?)
+    };
+
+    let default = resps.default.as_ref().map(|dflt| {
         let resp = dereference(dflt, &components.responses)?;
         let path = path.clone().push("default");
-        walk_response(&resp, path, type_index)?;
-    }
-    for (code, resp) in &resps.responses {
+        walk_response(&resp, path, type_index)
+    }).transpose()?.flatten();
+
+    let errors = errors.into_iter().map(|(code, resp)| {
         let path = path.clone().push(code.to_string());
         let resp = dereference(resp, &components.responses)?;
-        walk_response(&resp, path, type_index)?;
-    }
-    Ok(())
+        let ty = walk_response(&resp, path, type_index)?;
+        Ok((code, ty))
+    }).collect::<Result<Vec<_>>>()?;
+    Ok((success, errors, default))
 }
 
 fn walk_response(
     resp: &openapiv3::Response,
     path: ApiPath,
     type_index: &mut TypeLookup,
-) -> Result<()> {
+) -> Result<Option<TypeName>> {
     if !resp.headers.is_empty() {
         todo!("response headers not supported")
     }
     if !resp.links.is_empty() {
         todo!("response links not supported")
-    }
-    if resp.content.is_empty() {
-        return Ok(());
-    } else if !(resp.content.len() == 1 && resp.content.contains_key("application/json")) {
-        todo!("content type must be 'application/json'")
     }
     walk_contents(&resp.content, path, type_index)
 }
