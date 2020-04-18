@@ -21,8 +21,7 @@ pub(crate) struct Route {
     path_args: Map<Ident, TypePath>,
     query_params: Option<(TypePath, Map<Ident, TypePath>)>,
     return_ty: (StatusCode, Option<TypePath>),
-    err_tys: Vec<(StatusCode, Option<TypePath>)>,
-    default_err_ty: Option<TypePath>,
+    err_ty: TypePath,
 }
 
 impl Route {
@@ -32,10 +31,6 @@ impl Route {
 
     pub(crate) fn operation_id(&self) -> &Ident {
         &self.operation_id
-    }
-
-    fn query_type_name(&self) -> Option<TypeName> {
-        todo!()
     }
 
     /// Fetch the name of the return type identified as an error, if it exists.
@@ -69,13 +64,14 @@ impl Route {
         let queries: Vec<_> = self
             .query_params
             .as_ref()
-            .map(|(_, params)|
-                 params
-                 .iter()
-                 .map(|(id, ty)| (id, ty.canonicalize()))
-                 .map(|(id, ty)| quote! { #id: #ty })
-                 .collect()
-            ).unwrap_or(Vec::new());
+            .map(|(_, params)| {
+                params
+                    .iter()
+                    .map(|(id, ty)| (id, ty.canonicalize()))
+                    .map(|(id, ty)| quote! { #id: #ty })
+                    .collect()
+            })
+            .unwrap_or(Vec::new());
         let body_arg = self.method.body_type().map(|body_ty| {
             let body_ty = body_ty.canonicalize();
             let name = ident("payload");
@@ -89,7 +85,7 @@ impl Route {
     }
 
     pub fn generate_client_impl(&self) -> TokenStream {
-        quote!{}
+        quote! {}
         // let opid = &self.operation_id;
         // let err_ty = &self.return_err_ty();
         // let (ok_code, ok_ty) = &self.return_ty;
@@ -292,12 +288,18 @@ impl Route {
         // After all, it seems we have got the API signatures right/OK?
         let opid = &self.operation_id;
 
-        let (path_names, path_tys): (Vec<_>, Vec<_>) = self.path_args.iter().map(|(name, path)| {
-            (name, path.canonicalize())
-        }).unzip();
+        let (path_names, path_tys): (Vec<_>, Vec<_>) = self
+            .path_args
+            .iter()
+            .map(|(name, path)| (name, path.canonicalize()))
+            .unzip();
         let path_names = &path_names;
 
-        let query_keys = &self.query_params.as_ref().map(|(_, params)| params.keys().collect::<Vec<_>>()).unwrap_or_default();
+        let query_keys = &self
+            .query_params
+            .as_ref()
+            .map(|(_, params)| params.keys().collect::<Vec<_>>())
+            .unwrap_or_default();
         let (query_arg, query_destructure) = {
             self.query_params.as_ref().map(|(name, params)| {
                 let name = name.canonicalize();
@@ -309,15 +311,20 @@ impl Route {
                 };
                 (Some(query_arg), Some(query_destructure))
             })
-        }.unwrap_or((None, None));
+        }
+        .unwrap_or((None, None));
 
         let (body_arg, body_ident) = self
             .method
             .body_type()
             .map(TypePath::canonicalize)
             .map(|body_ty| {
-                (Some(quote! { AxJson(body): AxJson<#body_ty>, }), Some(ident("body")))
-            }).unwrap_or((None, None));
+                (
+                    Some(quote! { AxJson(body): AxJson<#body_ty>, }),
+                    Some(ident("body")),
+                )
+            })
+            .unwrap_or((None, None));
 
         let return_ty = &self
             .return_ty

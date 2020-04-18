@@ -15,8 +15,9 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, route::Route, unwrap_ref, ApiPath, Error, Ident, Method, MethodWithBody,
-    MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode, TypeName, TypePath,
+    dereference, error_variant_from_status_code, get_derive_tokens, route::Route, unwrap_ref,
+    ApiPath, Error, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath,
+    SchemaLookup, StatusCode, TypeName, TypePath,
 };
 use proc_macro2::Ident as QIdent;
 
@@ -57,8 +58,13 @@ enum TypeInner {
     // Any type. Could be anything! Probably a user-error
     Any,
     AllOf(Vec<ReferenceOr<Type>>),
-    OneOf(Vec<ReferenceOr<Type>>),
+    OneOf(Vec<ReferenceOr<TypePath>>),
     Struct(Struct),
+    // This is a special case, obviously
+    ErrorEnum {
+        errors: Vec<(StatusCode, Option<TypePath>)>,
+        default: Option<TypePath>,
+    },
 }
 
 impl TypeInner {
@@ -87,7 +93,10 @@ struct Struct {
 }
 
 impl Struct {
-    fn from_objlike<T: ObjectLike>(
+    /// Build a struct from an object-like OpenApi type
+    /// We look recursively inside the object definition
+    /// and nested schema definitions are added to the index
+    fn from_objlike_recursive<T: ObjectLike>(
         obj: &T,
         path: ApiPath,
         type_index: &mut TypeLookup,
@@ -97,7 +106,7 @@ impl Struct {
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
             let path = path.clone().push(name);
-            let ty = build_type(&schemaref, path.clone(), type_index)?;
+            let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
             assert!(type_index.insert(type_path, ty.clone()).is_none());
             fields.push(name.parse()?);
@@ -141,7 +150,7 @@ fn walk_component_schemas(schema_lookup: &SchemaLookup, type_index: &mut TypeLoo
     // gather types defined in components
     for (name, schema) in schema_lookup {
         let path = path.clone().push(name);
-        let typ = build_type(&schema, path.clone(), type_index)?;
+        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
         assert!(type_index.insert(TypePath::from(path), typ).is_none());
     }
     Ok(())
@@ -243,7 +252,7 @@ fn walk_operation(
                     let path = path.clone().push("path").push(&parameter_data.name);
                     let name: Ident = parameter_data.name.parse()?;
                     path_args.insert(name, TypePath::from(path.clone()));
-                    let typ = build_type(&schema, path.clone(), type_index)?;
+                    let typ = build_type_recursive(&schema, path.clone(), type_index)?;
                     assert!(type_index.insert(TypePath::from(path), typ).is_none());
                 }
                 ParameterSchemaOrContent::Content(_) => todo!(),
@@ -253,7 +262,7 @@ fn walk_operation(
                     let path = path.clone().push("query").push(&parameter_data.name);
                     let name: Ident = parameter_data.name.parse()?;
                     query_params.insert(name, TypePath::from(path.clone()));
-                    let typ = build_type(&schema, path.clone(), type_index)?;
+                    let typ = build_type_recursive(&schema, path.clone(), type_index)?;
                     assert!(type_index.insert(TypePath::from(path), typ).is_none());
                 }
                 ParameterSchemaOrContent::Content(_) => todo!(),
@@ -272,10 +281,7 @@ fn walk_operation(
         let typ = TypeInner::Struct(Struct { fields }).no_meta();
         let type_path = TypePath::from(path.clone().push("query"));
         let exists = type_index
-            .insert(
-                type_path.clone(),
-                ReferenceOr::Item(typ),
-            )
+            .insert(type_path.clone(), ReferenceOr::Item(typ))
             .is_some();
         assert!(!exists);
         Some((type_path, query_params))
@@ -295,7 +301,7 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let (return_ty, err_tys, default_err_ty) =
+    let (return_ty, err_ty) =
         walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
 
     let route = Route::new(
@@ -306,8 +312,7 @@ fn walk_operation(
         path_args,
         query_params,
         return_ty,
-        err_tys,
-        default_err_ty,
+        err_ty,
     );
 
     Ok(route)
@@ -329,7 +334,7 @@ fn walk_contents(
                 todo!("Content other than application/json not supported")
             }
             mediaty.schema.as_ref().map(|schema| {
-                let typ = build_type(schema, path.clone(), type_index)?;
+                let typ = build_type_recursive(schema, path.clone(), type_index)?;
                 assert!(type_index
                     .insert(TypePath::from(path.clone()), typ)
                     .is_none());
@@ -344,11 +349,7 @@ fn walk_responses(
     path: ApiPath,
     type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<(
-    (StatusCode, Option<TypePath>),
-    Vec<(StatusCode, Option<TypePath>)>,
-    Option<TypePath>,
-)> {
+) -> Result<((StatusCode, Option<TypePath>), TypePath)> {
     let ((success_code, success_resp), errors) = {
         // Check responses are valid status codes
         // We only support 2XX (success) and 4XX (error) codes (but not ranges)
@@ -376,7 +377,7 @@ fn walk_responses(
     };
 
     let success = {
-        let path = path.clone().push(success_code.to_string());
+        let path = path.clone().push(success_code.as_u16().to_string());
         let resp = dereference(success_resp, &components.responses)?;
         (success_code, walk_response(resp, path, type_index)?)
     };
@@ -395,13 +396,19 @@ fn walk_responses(
     let errors = errors
         .into_iter()
         .map(|(code, resp)| {
-            let path = path.clone().push(code.to_string());
+            let path = path.clone().push(code.as_u16().to_string());
             let resp = dereference(resp, &components.responses)?;
             let ty = walk_response(&resp, path, type_index)?;
             Ok((code, ty))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok((success, errors, default))
+
+    // We punt the nicities of a good error definition until later
+    let errty = TypeInner::ErrorEnum { errors, default }.no_meta();
+    let err_path = TypePath::from(path.push("errors"));
+    type_index.insert(err_path.clone(), ReferenceOr::Item(errty));
+
+    Ok((success, err_path))
 }
 
 fn walk_response(
@@ -418,7 +425,13 @@ fn walk_response(
     walk_contents(&resp.content, path, type_index)
 }
 
-fn build_type(
+/// Build a type from a schema definition
+// We do not try to be too clever here, mostly just build the type in
+// the obvious way and return it. References are left unchanged, we will
+// dereference them later. However, sometimes we will need to
+// recursively build an inner type (e.g. for arrays), at which point the outer-type will
+// need to add the inner-type to the registry to make sure it can use it
+fn build_type_recursive(
     ref_or_schema: &ReferenceOr<Schema>,
     path: ApiPath,
     type_index: &mut TypeLookup,
@@ -438,7 +451,7 @@ fn build_type(
             let inner = if obj.properties.is_empty() {
                 TypeInner::Any
             } else {
-                TypeInner::Struct(Struct::from_objlike(obj, path, type_index)?)
+                TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
             };
             return Ok(ReferenceOr::Item(inner.with_meta(meta)));
         }
@@ -448,10 +461,14 @@ fn build_type(
                 .enumerate()
                 .map(|(ix, schema)| {
                     let path = path.clone().push(format!("AllOf_{}", ix));
-                    build_type(schema, path, type_index)
+                    // Note that we do NOT automatically add the sub-types to
+                    // the registry as they may not be needed
+                    build_type_recursive(schema, path, type_index)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            // It's an 'allOf'. We need to costruct a new type by combining other types together
+            // It's an 'allOf', so at some point we need to costruct a new type by
+            // combining other types together. We can't do this yet, however -
+            // we will have to wait until we have 'seen' (i.e. walked) every type
             return Ok(ReferenceOr::Item(
                 TypeInner::AllOf(allof_types).with_meta(meta),
             ));
@@ -462,20 +479,25 @@ fn build_type(
     let typ = match ty {
         // TODO make enums from string
         // TODO fail on other validation
+        // handle the primitives in a straightforward way
         ApiType::String(_) => TypeInner::Primitive(Primitive::String),
         ApiType::Number(_) => TypeInner::Primitive(Primitive::F64),
         ApiType::Integer(_) => TypeInner::Primitive(Primitive::I64),
         ApiType::Boolean {} => TypeInner::Primitive(Primitive::Bool),
         ApiType::Array(arr) => {
+            // build the inner-type
             let items = arr.items.clone().unbox();
             let path = path.clone().push("array");
-            let innerty = build_type(&items, path.clone(), type_index)?;
+            let innerty = build_type_recursive(&items, path.clone(), type_index)?;
+            // add inner type to the registry
             assert!(type_index
                 .insert(TypePath::from(path), innerty.clone())
                 .is_none());
             TypeInner::Array(Box::new(innerty))
         }
-        ApiType::Object(obj) => TypeInner::Struct(Struct::from_objlike(obj, path, type_index)?),
+        ApiType::Object(obj) => {
+            TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
+        }
     };
     Ok(ReferenceOr::Item(typ.with_meta(meta)))
 }
@@ -559,7 +581,7 @@ fn generate_rust_type(
                             TypePath::from(path.push(field.deref())).canonicalize()
                         })
                         .collect();
-                    let derives = crate::get_derive_tokens();
+                    let derives = get_derive_tokens();
                     quote! {
                         #descr
                         #derives
@@ -568,10 +590,86 @@ fn generate_rust_type(
                         }
                     }
                 }
+                T::ErrorEnum { errors, default } => {
+                    generate_error_enum_def(&name, errors.as_slice(), default)
+                }
             }
         }
     };
     Ok(def)
+}
+
+/// If there are multitple difference error types, construct an
+/// enum to hold them all. If there is only one or none, don't bother.
+fn generate_error_enum_def(
+    name: &TypeName,
+    errors: &[(StatusCode, Option<TypePath>)],
+    default: &Option<TypePath>,
+) -> TokenStream {
+    let mut variants = vec![];
+    let mut variant_matches = vec![];
+    let mut status_codes = vec![];
+    for (code, mb_ty) in errors {
+        status_codes.push(code.as_u16());
+        let variant_name = error_variant_from_status_code(&code);
+        match mb_ty.as_ref() {
+            Some(ty) => {
+                let varty = ty.canonicalize();
+                variants.push(quote! { #variant_name(#varty) });
+                variant_matches.push(quote! { #variant_name(_) });
+            }
+            None => {
+                variants.push(quote! { #variant_name });
+                variant_matches.push(quote! { #variant_name });
+            }
+        }
+    }
+    // maybe add a default variant
+    let (mb_default_variant, mb_default_status) = match default.as_ref().map(TypePath::canonicalize)
+    {
+        Some(ref ty) => (
+            Some(quote! { Default(#ty), }),
+            Some(quote! { Default(e) => e.status_code(), }),
+        ),
+        None => (None, None),
+    };
+    let derives = get_derive_tokens();
+    quote! {
+        #derives
+        pub enum #name<E: HasStatusCode> {
+            #(#variants,)*
+            #mb_default_variant
+            Error(E)
+        }
+
+        impl<E: HasStatusCode> From<E> for #name<E> {
+            fn from(e: E) -> Self {
+                Self::Error(e)
+            }
+        }
+
+        impl<E: HasStatusCode> HasStatusCode for #name<E> {
+            fn status_code(&self) -> StatusCode {
+                use #name::*;
+                match self {
+                    #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
+                    #mb_default_status
+                    Error(e) => e.status_code()
+                }
+            }
+        }
+
+        impl<E: HasStatusCode> Responder for #name<E> {
+            type Error = Void;
+            type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
+
+            fn respond_to(self, _: &HttpRequest) -> Self::Future {
+                let status = self.status_code();
+                // TODO should also serialize object if possible/necessary
+                fut_ok(HttpResponse::build(status).finish())
+            }
+        }
+    }
 }
 
 fn combine_types(
@@ -623,7 +721,7 @@ mod tests {
         // let yaml = "../examples/petstore/petstore.yaml";
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
-        let (types, routes) = walk_api(&api).unwrap();
+        let (types, _routes) = walk_api(&api).unwrap();
 
         #[allow(unused_mut)]
         let mut code = generate_rust_types(&types).unwrap().to_string();
