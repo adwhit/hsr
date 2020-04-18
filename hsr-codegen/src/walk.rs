@@ -263,20 +263,22 @@ fn walk_operation(
         };
     }
 
-    {
+    let query_params = if query_params.is_empty() {
+        None
+    } else {
         // construct a query param type, if any
         // This will be used as an Extractor in actix-web
         let fields: Vec<Ident> = query_params.keys().cloned().collect();
-        if !fields.is_empty() {
-            let typ = TypeInner::Struct(Struct { fields }).no_meta();
-            let exists = type_index
-                .insert(
-                    TypePath::from(path.clone().push("query")),
-                    ReferenceOr::Item(typ),
-                )
-                .is_some();
-            assert!(!exists);
-        }
+        let typ = TypeInner::Struct(Struct { fields }).no_meta();
+        let type_path = TypePath::from(path.clone().push("query"));
+        let exists = type_index
+            .insert(
+                type_path.clone(),
+                ReferenceOr::Item(typ),
+            )
+            .is_some();
+        assert!(!exists);
+        Some((type_path, query_params))
     };
 
     let body_path: Option<TypePath> = op
@@ -507,7 +509,11 @@ fn generate_rust_type(
             }
         }
         ReferenceOr::Item(typ) => {
-            let descr = typ.meta.description.as_ref().map(|s| s.as_str());
+            let descr = typ.meta.description.as_ref().map(|s| {
+                quote! {
+                    #[doc = #s]
+                }
+            });
             use TypeInner as T;
             match &typ.typ {
                 T::Any => {
@@ -617,7 +623,7 @@ mod tests {
         // let yaml = "../examples/petstore/petstore.yaml";
         let yaml = fs::read_to_string(yaml).unwrap();
         let api: OpenAPI = serde_yaml::from_str(&yaml).unwrap();
-        let types = gather_types(&api).unwrap();
+        let (types, routes) = walk_api(&api).unwrap();
 
         #[allow(unused_mut)]
         let mut code = generate_rust_types(&types).unwrap().to_string();

@@ -10,7 +10,7 @@ use std::str::FromStr;
 use actix_http::http::StatusCode;
 use derive_more::{Deref, Display};
 use either::Either;
-use heck::{CamelCase, SnakeCase};
+use heck::{CamelCase, MixedCase, SnakeCase};
 use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{
@@ -33,12 +33,7 @@ fn ident(s: impl fmt::Display) -> QIdent {
     QIdent::new(&s.to_string(), proc_macro2::Span::call_site())
 }
 
-type IdMap<T> = Map<Ident, T>;
-type TypeMap<T> = Map<TypeName, T>;
 type SchemaLookup = Map<String, ReferenceOr<Schema>>;
-type ResponseLookup = Map<String, ReferenceOr<openapiv3::Response>>;
-type ParametersLookup = Map<String, ReferenceOr<openapiv3::Parameter>>;
-type RequestLookup = Map<String, ReferenceOr<openapiv3::RequestBody>>;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -249,8 +244,8 @@ impl FromStr for Ident {
         // We use snake_case internally, but additionally allow mixedCase identifiers
         // to be passed, since this is common in JS world
         let snake = val.to_snake_case();
-        let camel = val.to_camel_case();
-        if val == snake || val == camel {
+        let mixed = val.to_mixed_case();
+        if val == snake || val == mixed {
             Ok(Ident(snake))
         } else {
             Err(Error::BadIdentifier(val.to_string()))
@@ -509,7 +504,7 @@ fn generate_rust_dispatchers(
     trait_name: &TypeName,
 ) -> TokenStream {
     let mut dispatchers = TokenStream::new();
-    for (_, route_methods) in routes {
+    for (_api_path, route_methods) in routes {
         for route in route_methods {
             dispatchers.extend(route.generate_dispatcher(trait_name));
         }
@@ -635,11 +630,11 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     let mut api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
 
     // pull out various sections of the OpenAPI object which will be useful
-    let components = api.components.take().unwrap_or_default();
-    let schema_lookup = components.schemas;
-    let response_lookup = components.responses;
-    let parameters_lookup = components.parameters;
-    let req_body_lookup = components.request_bodies;
+    // let components = api.components.take().unwrap_or_default();
+    // let schema_lookup = components.schemas;
+    // let response_lookup = components.responses;
+    // let parameters_lookup = components.parameters;
+    // let req_body_lookup = components.request_bodies;
 
     // Generate the spec as json. This will be embedded in the binary
     let json_spec = serde_json::to_string(&api).expect("Bad api serialization");

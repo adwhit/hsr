@@ -19,7 +19,7 @@ pub(crate) struct Route {
     method: Method,
     path: RoutePath,
     path_args: Map<Ident, TypePath>,
-    query_params: Map<Ident, TypePath>,
+    query_params: Option<(TypePath, Map<Ident, TypePath>)>,
     return_ty: (StatusCode, Option<TypePath>),
     err_tys: Vec<(StatusCode, Option<TypePath>)>,
     default_err_ty: Option<TypePath>,
@@ -34,6 +34,10 @@ impl Route {
         &self.operation_id
     }
 
+    fn query_type_name(&self) -> Option<TypeName> {
+        todo!()
+    }
+
     /// Fetch the name of the return type identified as an error, if it exists.
     /// If there are multiple error return types, this will give the name of an enum
     /// which can hold any of them
@@ -44,47 +48,48 @@ impl Route {
     /// The name of the return type. If none are found, returns '()'.
     /// If both Success and Error types exist, will be a Result type
     fn return_ty(&self) -> TokenStream {
-        todo!()
-        // let ok = match &self.return_ty.1 {
-        //     Some(ty) => quote! { #ty },
-        //     None => quote! { hsr::Success },
-        // };
-        // let err = self.return_err_ty();
-        // quote! { std::result::Result<#ok, #err<Self::Error>> }
+        let ok = match self.return_ty.1.as_ref().map(TypePath::canonicalize) {
+            Some(ty) => quote! { #ty },
+            None => quote! { hsr::Success },
+        };
+        let err = self.return_err_ty();
+        quote! { std::result::Result<#ok, #err<Self::Error>> }
     }
 
     /// Generate the function signature compatible with the Route
     pub fn generate_signature(&self) -> TokenStream {
-        todo!()
-        // let opid = &self.operation_id;
-        // let return_ty = self.return_ty();
-        // let paths: Vec<_> = self
-        //     .path_args
-        //     .iter()
-        //     .map(|(id, ty)| quote! { #id: #ty })
-        //     .collect();
-        // let queries: Vec<_> = self
-        //     .query_args
-        //     .iter()
-        //     .map(|(id, ty)| quote! { #id: #ty })
-        //     .collect();
-        // let body_arg = self.method.body_type().map(|body_ty| {
-        //     let name = if let TypeInner::Named(typename) = &body_ty.typ {
-        //         ident(typename.to_string().to_snake_case())
-        //     } else {
-        //         ident("payload")
-        //     };
-        //     Some(quote! { #name: #body_ty, })
-        // });
-        // let docs = self.summary.as_ref().map(doc_comment);
-        // quote! {
-        //     #docs
-        //     async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #return_ty;
-        // }
+        let opid = &self.operation_id;
+        let return_ty = self.return_ty();
+        let paths: Vec<_> = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| (id, ty.canonicalize()))
+            .map(|(id, ty)| quote! { #id: #ty })
+            .collect();
+        let queries: Vec<_> = self
+            .query_params
+            .as_ref()
+            .map(|(_, params)|
+                 params
+                 .iter()
+                 .map(|(id, ty)| (id, ty.canonicalize()))
+                 .map(|(id, ty)| quote! { #id: #ty })
+                 .collect()
+            ).unwrap_or(Vec::new());
+        let body_arg = self.method.body_type().map(|body_ty| {
+            let body_ty = body_ty.canonicalize();
+            let name = ident("payload");
+            Some(quote! { #name: #body_ty, })
+        });
+        let docs = self.summary.as_ref().map(doc_comment);
+        quote! {
+            #docs
+            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #return_ty;
+        }
     }
 
     pub fn generate_client_impl(&self) -> TokenStream {
-        todo!()
+        quote!{}
         // let opid = &self.operation_id;
         // let err_ty = &self.return_err_ty();
         // let (ok_code, ok_ty) = &self.return_ty;
@@ -285,72 +290,75 @@ impl Route {
     pub(crate) fn generate_dispatcher(&self, trait_name: &TypeName) -> TokenStream {
         // XXX this function is a total mess, there must be a better way to do it.
         // After all, it seems we have got the API signatures right/OK?
-        // let opid = &self.operation_id;
+        let opid = &self.operation_id;
 
-        // let (path_names, path_tys): (Vec<_>, Vec<_>) = self.path_args.iter().cloned().unzip();
-        // let path_names = &path_names;
+        let (path_names, path_tys): (Vec<_>, Vec<_>) = self.path_args.iter().map(|(name, path)| {
+            (name, path.canonicalize())
+        }).unzip();
+        let path_names = &path_names;
 
-        // let query_keys = &self.query_args.keys().collect::<Vec<_>>();
-        // let query_name = self.generate_query_type_name();
-        // let query_destructure = query_name.as_ref().map(|name| {
-        //     quote! {
-        //         let #name { #(#query_keys),* } = query.into_inner();
-        //     }
-        // });
-        // let query_arg = query_name.map(|name| {
-        //     quote! {
-        //         query: AxQuery<#name>
-        //     }
-        // });
+        let query_keys = &self.query_params.as_ref().map(|(_, params)| params.keys().collect::<Vec<_>>()).unwrap_or_default();
+        let (query_arg, query_destructure) = {
+            self.query_params.as_ref().map(|(name, params)| {
+                let name = name.canonicalize();
+                let query_destructure = quote! {
+                    let #name { #(#query_keys),* } = query.into_inner();
+                };
+                let query_arg = quote! {
+                    query: AxQuery<#name>
+                };
+                (Some(query_arg), Some(query_destructure))
+            })
+        }.unwrap_or((None, None));
 
-        // let body_arg = self
-        //     .method
-        //     .body_type()
-        //     .map(|body_ty| quote! { AxJson(body): AxJson<#body_ty>, });
-        // let body_into = body_arg.as_ref().map(|_| ident("body"));
+        let (body_arg, body_ident) = self
+            .method
+            .body_type()
+            .map(TypePath::canonicalize)
+            .map(|body_ty| {
+                (Some(quote! { AxJson(body): AxJson<#body_ty>, }), Some(ident("body")))
+            }).unwrap_or((None, None));
 
-        // let return_ty = &self
-        //     .return_ty
-        //     .1
-        //     .as_ref()
-        //     .map(|ty| quote! { AxJson<#ty> })
-        //     .unwrap_or(quote! { hsr::Success });
-        // let return_err_ty = self.return_err_ty();
+        let return_ty = &self
+            .return_ty
+            .1
+            .as_ref()
+            .map(TypePath::canonicalize)
+            .map(|ty| quote! { AxJson<#ty> })
+            .unwrap_or(quote! { hsr::Success });
+        let return_err_ty = self.return_err_ty();
 
-        // // If return 'Ok' type is not null, we wrap it in AxJson
-        // let maybe_wrap_return_val = self.return_ty.1.as_ref().map(|_| {
-        //     quote! { .map(AxJson) }
-        // });
+        // If return 'Ok' type is not null, we wrap it in AxJson
+        let maybe_wrap_return_val = self.return_ty.1.as_ref().map(|_| {
+            quote! { .map(AxJson) }
+        });
 
-        // let ok_status_code = self.return_ty.0.as_u16();
+        let ok_status_code = self.return_ty.0.as_u16();
 
-        // todo!()
+        let code = quote! {
+            async fn #opid<A: #trait_name + Send + Sync>(
+                data: AxData<A>,
+                #(#path_names: AxPath<#path_tys>,)*
+                #query_arg
+                #body_arg
+            ) -> AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>> {
 
-        // let code = quote! {
-        //     async fn #opid<A: #trait_name + Send + Sync>(
-        //         data: AxData<A>,
-        //         #(#path_names: AxPath<#path_tys>,)*
-        //         #query_arg
-        //         #body_arg
-        //     ) -> AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>> {
-
-        //         // call our API handler function with requisite arguments
-        //         #query_destructure
-        //         let out = data.#opid(
-        //             // TODO we should destructure everything through pattern-matching the signature
-        //             #(#path_names.into_inner(),)*
-        //             #(#query_keys,)*
-        //             #body_into
-        //         ).await;
-        //         let out = out
-        //         // wrap returnval in AxJson, if necessary
-        //             #maybe_wrap_return_val
-        //         // give outcome a status code (simple way of overriding the Responder return type)
-        //         .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
-        //         hsr::result_to_either(out)
-        //     }
-        // };
-        // code
-        todo!()
+                // call our API handler function with requisite arguments
+                #query_destructure
+                let out = data.#opid(
+                    // TODO we should destructure everything through pattern-matching the signature
+                    #(#path_names.into_inner(),)*
+                    #(#query_keys,)*
+                    #body_ident
+                ).await;
+                let out = out
+                // wrap returnval in AxJson, if necessary
+                    #maybe_wrap_return_val
+                // give outcome a status code (simple way of overriding the Responder return type)
+                .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
+                hsr::result_to_either(out)
+            }
+        };
+        code
     }
 }
