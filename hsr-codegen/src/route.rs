@@ -85,6 +85,7 @@ impl Route {
     }
 
     pub fn generate_client_impl(&self) -> TokenStream {
+        // TODO!
         quote! {}
         // let opid = &self.operation_id;
         // let err_ty = &self.return_err_ty();
@@ -208,73 +209,6 @@ impl Route {
 
     /// If there are multitple difference error types, construct an
     /// enum to hold them all. If there is only one or none, don't bother.
-    pub fn generate_error_enum_def(&self) -> TokenStream {
-        // let name = self.return_err_ty();
-        // let mut variants = vec![];
-        // let mut variant_matches = vec![];
-        // let mut status_codes = vec![];
-        // for (code, mb_ty) in &self.err_tys {
-        //     status_codes.push(code.as_u16());
-        //     let variant_name = error_variant_from_status_code(&code);
-        //     match mb_ty.as_ref() {
-        //         Some(ty) => {
-        //             variants.push(quote! { #variant_name(#ty) });
-        //             variant_matches.push(quote! { #variant_name(_) });
-        //         }
-        //         None => {
-        //             variants.push(quote! { #variant_name });
-        //             variant_matches.push(quote! { #variant_name });
-        //         }
-        //     }
-        // }
-        // // maybe add a default variant
-        // let (mb_default_variant, mb_default_status) = match self.default_err_ty {
-        //     Some(ref ty) => (
-        //         Some(quote! { Default(#ty), }),
-        //         Some(quote! { Default(e) => e.status_code(), }),
-        //     ),
-        //     None => (None, None),
-        // };
-        // let derives = get_derive_tokens();
-        // quote! {
-        //     #derives
-        //     pub enum #name<E: HasStatusCode> {
-        //         #(#variants,)*
-        //         #mb_default_variant
-        //         Error(E)
-        //     }
-
-        //     impl<E: HasStatusCode> From<E> for #name<E> {
-        //         fn from(e: E) -> Self {
-        //             Self::Error(e)
-        //         }
-        //     }
-
-        //     impl<E: HasStatusCode> HasStatusCode for #name<E> {
-        //         fn status_code(&self) -> StatusCode {
-        //             use #name::*;
-        //             match self {
-        //                 #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
-        //                 #mb_default_status
-        //                 Error(e) => e.status_code()
-        //             }
-        //         }
-        //     }
-
-        //     impl<E: HasStatusCode> Responder for #name<E> {
-        //         type Error = Void;
-        //         type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
-
-        //         fn respond_to(self, _: &HttpRequest) -> Self::Future {
-        //             let status = self.status_code();
-        //             // TODO should also serialize object if possible/necessary
-        //             fut_ok(HttpResponse::build(status).finish())
-        //         }
-        //     }
-        // }
-        todo!()
-    }
-
     /// Generate the dispatcher function. This function wraps the
     /// interface function in a shim that translates the signature into a form
     /// that Actix expects.
@@ -301,7 +235,7 @@ impl Route {
             .map(|(_, params)| params.keys().collect::<Vec<_>>())
             .unwrap_or_default();
         let (query_arg, query_destructure) = {
-            self.query_params.as_ref().map(|(name, params)| {
+            self.query_params.as_ref().map(|(name, _params)| {
                 let name = name.canonicalize();
                 let query_destructure = quote! {
                     let #name { #(#query_keys),* } = query.into_inner();

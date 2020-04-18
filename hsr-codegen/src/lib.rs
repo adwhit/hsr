@@ -421,22 +421,6 @@ impl RoutePath {
             }
         })
     }
-
-    fn build_template(&self) -> String {
-        let mut path = String::new();
-        for segment in &self.segments {
-            match segment {
-                PathSegment::Literal(p) => {
-                    path.push('/');
-                    path.push_str(&p);
-                }
-                PathSegment::Parameter(_) => {
-                    path.push_str("/{}");
-                }
-            }
-        }
-        path
-    }
 }
 
 fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
@@ -455,23 +439,6 @@ fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
 fn get_derive_tokens() -> TokenStream {
     quote! {
         # [derive(Debug, Clone, PartialEq, PartialOrd, hsr::Serialize, hsr::Deserialize)]
-    }
-}
-
-enum Visibility {
-    Private,
-    Public,
-}
-
-impl quote::ToTokens for Visibility {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        match self {
-            Visibility::Public => {
-                let q = quote! { pub };
-                q.to_tokens(tokens);
-            }
-            Visibility::Private => (),
-        }
     }
 }
 
@@ -627,7 +594,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     // Read the yaml file into an OpenAPI struct
     let mut openapi_source = String::new();
     yaml.read_to_string(&mut openapi_source)?;
-    let mut api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
+    let api: OpenAPI = serde_yaml::from_str(&openapi_source)?;
 
     // pull out various sections of the OpenAPI object which will be useful
     // let components = api.components.take().unwrap_or_default();

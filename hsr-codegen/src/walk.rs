@@ -177,7 +177,6 @@ fn walk_paths(
                 method,
                 api_path.clone(),
                 &route_path,
-                &pathitem.parameters,
                 type_index,
                 components,
             )?;
@@ -226,13 +225,11 @@ fn walk_operation(
     method: RawMethod,
     path: ApiPath,
     route_path: &RoutePath,
-    parameters: &[ReferenceOr<Parameter>],
     type_index: &mut TypeLookup,
     components: &Components,
 ) -> Result<Route> {
     use Parameter::*;
 
-    let expected_path_arg_ct = route_path.path_args().count();
     let operation_id = match op.operation_id {
         Some(ref op) => op.parse(),
         None => Err(Error::NoOperationId(path.to_string())),
@@ -270,6 +267,10 @@ fn walk_operation(
             Header { .. } => todo!(),
             Cookie { .. } => todo!(),
         };
+    }
+
+    if route_path.path_args().count() > path_args.len() {
+        todo!("Not enough path args specified!")
     }
 
     let query_params = if query_params.is_empty() {
@@ -546,7 +547,7 @@ fn generate_rust_type(
                     }
                 }
                 T::AllOf(parts) => {
-                    let strukt = combine_types(type_path, parts, lookup)?;
+                    let strukt = combine_types(parts, lookup)?;
                     let typ =
                         ReferenceOr::Item(TypeInner::Struct(strukt).with_meta(typ.meta.clone()));
                     // Defer to struct impl
@@ -570,7 +571,7 @@ fn generate_rust_type(
                         type #name = Vec<#inner_path>;
                     }
                 }
-                T::Option(inner) => todo!(),
+                T::Option(_inner) => todo!(),
                 T::Struct(strukt) => {
                     let fieldnames = &strukt.fields;
                     let fields: Vec<TypeName> = strukt
@@ -672,11 +673,7 @@ fn generate_error_enum_def(
     }
 }
 
-fn combine_types(
-    path: &TypePath,
-    parts: &[ReferenceOr<Type>],
-    lookup: &TypeLookup,
-) -> Result<Struct> {
+fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Struct> {
     fn deref<'a>(item: &'a ReferenceOr<Type>, lookup: &'a TypeLookup) -> Result<&'a Type> {
         match item {
             ReferenceOr::Reference { reference } => {
@@ -691,7 +688,7 @@ fn combine_types(
     }
 
     let mut base = Set::new();
-    for (ix, part) in parts.iter().enumerate() {
+    for part in parts.iter() {
         let typ = deref(part, lookup)?;
         match &typ.typ {
             TypeInner::Struct(strukt) => {
