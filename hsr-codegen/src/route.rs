@@ -6,7 +6,7 @@ use quote::quote;
 
 use std::convert::TryFrom;
 
-use crate::walk::{Type, ApiPath};
+use crate::walk::Type;
 use crate::*;
 
 /// Route contains all the information necessary to contruct the API
@@ -18,231 +18,20 @@ pub(crate) struct Route {
     operation_id: Ident,
     method: Method,
     path: RoutePath,
-    path_args: Map<Ident, ApiPath>,
-    query_params: Map<Ident, ApiPath>,
-    return_ty: (StatusCode, Option<TypeName>),
-    err_tys: Vec<(StatusCode, Option<TypeName>)>,
-    default_err_ty: Option<TypeName>,
+    path_args: Map<Ident, TypePath>,
+    query_params: Map<Ident, TypePath>,
+    return_ty: (StatusCode, Option<TypePath>),
+    err_tys: Vec<(StatusCode, Option<TypePath>)>,
+    default_err_ty: Option<TypePath>,
 }
 
 impl Route {
-//     pub(crate) fn build(
-//         summary: Option<String>,
-//         path: &str,
-//         method: Method,
-//         operation_id: &Option<String>,
-//         parameters: &[ReferenceOr<openapiv3::Parameter>],
-//         responses: &openapiv3::Responses,
-//         type_index: &mut TypeLookup,
-//         schema_lookup: &SchemaLookup,
-//         response_lookup: &ResponseLookup,
-//         parameters_lookup: &ParametersLookup,
-//     ) -> Result<Route> {
-        // let path = RoutePath::analyse(path)?;
-        // let expected_path_args = path.path_args().count();
-        // let operation_id = match operation_id {
-        //     Some(ref op) => op.parse(),
-        //     None => Err(Error::NoOperationId(path.to_string())),
-        // }?;
-        // let mut path_args = vec![];
-        // let mut query_args = IdMap::new();
-        // for parameter in parameters {
-        //     use openapiv3::Parameter::*;
-        //     let parameter = dereference(parameter, parameters_lookup)?;
-        //     // TODO lots of missing impls here
-        //     match parameter {
-        //         // TODO what do the rest of the args do? (the .. ones)
-        //         Path { parameter_data, .. } => {
-        //             if !parameter_data.required {
-        //                 return Err(Error::Todo(format!(
-        //                     "Path parameter {} must be required",
-        //                     parameter_data.name
-        //                 )));
-        //             }
-        //             let id = parameter_data.name.parse()?;
-        //             let ty = match &parameter_data.format {
-        //                 openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-        //                     build_type(ref_or_schema, schema_lookup)
-        //                         .and_then(|s| s.discard_struct())?
-        //                 }
-        //                 _content => unimplemented!(),
-        //             };
-        //             // TODO validate against path segments
-        //             path_args.push((id, ty));
-        //         }
-
-        //         Query { parameter_data, .. } => {
-//                     let id = parameter_data.name.parse()?;
-//                     let mut ty = match &parameter_data.format {
-//                         openapiv3::ParameterSchemaOrContent::Schema(ref ref_or_schema) => {
-//                             build_type(ref_or_schema, schema_lookup)
-//                                 .and_then(|s| s.discard_struct())?
-//                         }
-//                         _content => unimplemented!(),
-//                     };
-//                     if !parameter_data.required {
-//                         ty = ty.to_option()
-//                     }
-//                     // TODO check for duplicates
-//                     assert!(query_args.insert(id, ty).is_none());
-//                 }
-//                 _ => unimplemented!(),
-//             }
-//         }
-//         if path_args.len() != expected_path_args {
-//             return Err(Error::BadSchema(format!(
-//                 "path '{}' expected {} path parameter(s), found {}",
-//                 path,
-//                 expected_path_args,
-//                 path_args.len()
-//             )));
-//         }
-
-//         // Check responses are valid status codes
-//         // We only support 2XX (success) and 4XX (error) codes (but not ranges)
-//         let mut success_code = None;
-//         let mut error_codes = vec![];
-//         for code in responses.responses.keys() {
-//             let status = match code {
-//                 ApiStatusCode::Code(v) => {
-//                     StatusCode::from_u16(*v).map_err(|_| Error::BadStatusCode(code.clone()))
-//                 }
-//                 _ => return Err(Error::BadStatusCode(code.clone())),
-//             }?;
-//             if status.is_success() {
-//                 if success_code.replace(status).is_some() {
-//                     return Err(Error::Todo("Expected exactly one 'success' status".into()));
-//                 }
-//             } else if status.is_client_error() {
-//                 error_codes.push(status)
-//             } else {
-//                 return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()));
-//             }
-//         }
-
-//         let return_ty = success_code
-//             .ok_or_else(|| Error::Todo("Expected exactly one 'success' status".into()))
-//             .and_then(|status| {
-//                 let code = ApiStatusCode::Code(status.as_u16());
-//                 let ref_or_resp = &responses.responses[&code];
-//                 get_type_of_response(&ref_or_resp, response_lookup, schema_lookup)
-//                     .map(|ty| (status, ty))
-//             })?;
-//         let err_tys = error_codes
-//             .iter()
-//             .map(|&e| {
-//                 let code = ApiStatusCode::Code(e.as_u16());
-//                 let ref_or_resp = &responses.responses[&code];
-//                 get_type_of_response(&ref_or_resp, response_lookup, schema_lookup).map(|ty| (e, ty))
-//             })
-//             .collect::<Result<Vec<_>>>()?;
-//         let default_err_ty = responses
-//             .default
-//             .as_ref()
-//             .map(|ref_or_resp| {
-//                 get_type_of_response(&ref_or_resp, response_lookup, schema_lookup).and_then(
-//                     |mb_ty| {
-//                         mb_ty.ok_or_else(|| Error::Todo("default type may not null".to_string()))
-//                     },
-//                 )
-//             })
-//             .transpose()?;
-
-//         Ok(Route {
-//             summary,
-//             operation_id,
-//             path_args,
-//             query_args,
-//             path,
-//             method,
-//             return_ty,
-//             err_tys,
-//             default_err_ty,
-//         })
-//     }
-
-    pub(crate) fn without_body(
-        path: &str,
-        method: MethodWithoutBody,
-        op: &openapiv3::Operation,
-        schema_lookup: &SchemaLookup,
-        response_lookup: &ResponseLookup,
-        parameters_lookup: &ParametersLookup,
-    ) -> Result<Route> {
-//         Route::build(
-//             op.summary.clone(),
-//             path,
-//             Method::WithoutBody(method),
-//             &op.operation_id,
-//             &op.parameters,
-//             &op.responses,
-//             schema_lookup,
-//             response_lookup,
-//             parameters_lookup,
-//         )
-        todo!()
-    }
-
-    pub(crate) fn with_body(
-        path: &str,
-        method: MethodWithBody,
-        op: &openapiv3::Operation,
-        schema_lookup: &SchemaLookup,
-        response_lookup: &ResponseLookup,
-        parameters_lookup: &ParametersLookup,
-        req_body_lookup: &RequestLookup,
-    ) -> Result<Route> {
-//         let body_type = if let Some(ref body) = op.request_body {
-//             // extract the body type
-//             let body = dereference(body, req_body_lookup)?;
-//             if !(body.content.len() == 1 && body.content.contains_key("application/json")) {
-//                 return Err(Error::Todo(
-//                     "Request body must by application/json only".into(),
-//                 ));
-//             }
-//             let ref_or_schema = body
-//                 .content
-//                 .get("application/json")
-//                 .unwrap()
-//                 .schema
-//                 .as_ref()
-//                 .ok_or_else(|| Error::Todo("Media type does not contain schema".into()))?;
-//             Some(build_type(&ref_or_schema, schema_lookup).and_then(|s| s.discard_struct())?)
-//         } else {
-//             None
-//         };
-//         Route::build(
-//             op.summary.clone(),
-//             path,
-//             Method::WithBody { method, body_type },
-//             &op.operation_id,
-//             &op.parameters,
-//             &op.responses,
-//             schema_lookup,
-//             response_lookup,
-//             parameters_lookup,
-//         )
-        todo!()
-    }
-
     pub(crate) fn method(&self) -> &Method {
         &self.method
     }
 
     pub(crate) fn operation_id(&self) -> &Ident {
         &self.operation_id
-    }
-
-    pub(crate) fn generate_query_type_name(&self) -> Option<TypeName> {
-        todo!()
-        // if self.query_args.is_empty() {
-        //     None
-        // } else {
-        //     Some(
-        //         TypeName::try_from(format!("{}Query", &*self.operation_id.to_camel_case()))
-        //             .unwrap(),
-        //     )
-        // }
     }
 
     /// Fetch the name of the return type identified as an error, if it exists.

@@ -93,7 +93,10 @@ fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
 }
 
 /// Fetch reference target via a lookup
-fn dereference<'a, T>(refr: &'a ReferenceOr<T>, lookup: &'a Map<String, ReferenceOr<T>>) -> Result<&'a T> {
+fn dereference<'a, T>(
+    refr: &'a ReferenceOr<T>,
+    lookup: &'a Map<String, ReferenceOr<T>>,
+) -> Result<&'a T> {
     match refr {
         ReferenceOr::Reference { reference } => lookup
             .get(reference)
@@ -116,7 +119,7 @@ enum RawMethod {
     Patch,
     Options,
     Head,
-    Trace
+    Trace,
 }
 
 /// Separately represents methods which CANNOT take a body (GET, HEAD, OPTIONS, TRACE)
@@ -127,7 +130,7 @@ enum Method {
     WithBody {
         method: MethodWithBody,
         /// The expected body payload, if any
-        body_type: Option<TypeName>,
+        body_type: Option<TypePath>,
     },
 }
 
@@ -141,15 +144,15 @@ impl fmt::Display for Method {
 }
 
 impl Method {
-    fn from_raw(method: RawMethod, body_type: Option<TypeName>) -> Result<Self> {
-        use RawMethod as R;
+    fn from_raw(method: RawMethod, body_type: Option<TypePath>) -> Result<Self> {
         use Method as M;
         use MethodWithBody::*;
         use MethodWithoutBody::*;
+        use RawMethod as R;
         match method {
             R::Get | R::Head | R::Options | R::Trace => {
                 if body_type.is_some() {
-                    return Err(Error::Todo("eh".into()))
+                    return Err(Error::Todo("eh".into()));
                 }
             }
             _ => {}
@@ -159,15 +162,27 @@ impl Method {
             R::Head => M::WithoutBody(Head),
             R::Trace => M::WithoutBody(Trace),
             R::Options => M::WithoutBody(Options),
-            R::Post => M::WithBody { method: Post, body_type },
-            R::Patch => M::WithBody { method: Patch, body_type },
-            R::Put => M::WithBody { method: Put, body_type },
-            R::Delete => M::WithBody { method: Delete, body_type },
+            R::Post => M::WithBody {
+                method: Post,
+                body_type,
+            },
+            R::Patch => M::WithBody {
+                method: Patch,
+                body_type,
+            },
+            R::Put => M::WithBody {
+                method: Put,
+                body_type,
+            },
+            R::Delete => M::WithBody {
+                method: Delete,
+                body_type,
+            },
         };
         Ok(meth)
     }
 
-    fn body_type(&self) -> Option<&TypeName> {
+    fn body_type(&self) -> Option<&TypePath> {
         match self {
             Method::WithoutBody(_)
             | Method::WithBody {
@@ -247,6 +262,72 @@ impl quote::ToTokens for Ident {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let id = ident(&self.0);
         id.to_tokens(tokens)
+    }
+}
+
+/// An ApiPath represents a nested location within the OpenAPI object.
+/// It can be used to keep track of where resources (particularly type
+/// definitions) are located.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ApiPath(Vec<String>);
+
+impl ApiPath {
+    fn push(mut self, s: impl Into<String>) -> Self {
+        self.0.push(s.into());
+        self
+    }
+}
+
+impl From<TypePath> for ApiPath {
+    fn from(path: TypePath) -> Self {
+        Self(path.0)
+    }
+}
+
+impl std::fmt::Display for ApiPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        let joined = self.0.join(".");
+        write!(f, "{}", joined)
+    }
+}
+
+/// A TypePath is a 'frozen' ApiPath, that points to the location
+/// where a type was defined. It's main use is as an identifier to use
+/// with the TypeLookup map, and to generate a canonical name for a type.
+/// Once created, it is intended to be read-only
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TypePath(Vec<String>);
+
+impl From<ApiPath> for TypePath {
+    fn from(path: ApiPath) -> Self {
+        Self(path.0)
+    }
+}
+
+impl TypePath {
+    pub(crate) fn from_reference(refr: &str) -> Result<Self> {
+        let rx = Regex::new("^#/components/schemas/([[:alnum:]]+)$").unwrap();
+        let cap = rx
+            .captures(refr)
+            .ok_or_else(|| Error::BadReference(refr.into()))?;
+        let name = cap.get(1).unwrap();
+        let path = vec![
+            "components".into(),
+            "schemas".into(),
+            name.as_str().to_string(),
+        ];
+        Ok(Self(path))
+    }
+
+    pub(crate) fn canonicalize(&self) -> TypeName {
+        let parts: Vec<&str> = self.0.iter().map(String::as_str).collect();
+        let parts = match &parts[..] {
+            // strip out not-useful components path
+            ["components", "schemas", rest @ ..] => &rest,
+            rest => rest,
+        };
+        let joined = parts.join(" ");
+        TypeName::try_from(joined.to_camel_case()).unwrap()
     }
 }
 
@@ -363,164 +444,6 @@ impl RoutePath {
     }
 }
 
-/// Traverse the Paths object and transform into a collection of Routes
-fn gather_routes(
-    paths: &openapiv3::Paths,
-    schema_lookup: &SchemaLookup,
-    response_lookup: &ResponseLookup,
-    param_lookup: &ParametersLookup,
-    req_body_lookup: &RequestLookup,
-) -> Result<Map<String, Vec<Route>>> {
-    let mut routes = Map::new();
-    debug!("Found paths: {:?}", paths.keys().collect::<Vec<_>>());
-    for (path, pathitem) in paths {
-        debug!("Processing path: {:?}", path);
-        let pathitem = unwrap_ref(&pathitem)?;
-        let mut pathroutes = Vec::new();
-
-        // *** methods without body ***
-        // GET
-        if let Some(ref op) = pathitem.get {
-            let route = Route::without_body(
-                path,
-                MethodWithoutBody::Get,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        // OPTIONS
-        if let Some(ref op) = pathitem.options {
-            let route = Route::without_body(
-                path,
-                MethodWithoutBody::Options,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        // HEAD
-        if let Some(ref op) = pathitem.head {
-            let route = Route::without_body(
-                path,
-                MethodWithoutBody::Head,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        // TRACE
-        if let Some(ref op) = pathitem.trace {
-            let route = Route::without_body(
-                path,
-                MethodWithoutBody::Trace,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        // *** methods with body ***
-        // POST
-        if let Some(ref op) = pathitem.post {
-            let route = Route::with_body(
-                path,
-                MethodWithBody::Post,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-                req_body_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        // PUT
-        if let Some(ref op) = pathitem.put {
-            let route = Route::with_body(
-                path,
-                MethodWithBody::Put,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-                req_body_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        if let Some(ref op) = pathitem.patch {
-            let route = Route::with_body(
-                path,
-                MethodWithBody::Patch,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-                req_body_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        if let Some(ref op) = pathitem.delete {
-            let route = Route::with_body(
-                path,
-                MethodWithBody::Delete,
-                op,
-                schema_lookup,
-                response_lookup,
-                param_lookup,
-                req_body_lookup,
-            )?;
-            debug!("Add route: {:?}", route);
-            pathroutes.push(route)
-        }
-
-        let is_duped_key = routes.insert(path.to_string(), pathroutes).is_some();
-        assert!(!is_duped_key);
-    }
-    Ok(routes)
-}
-
-trait ObjectLike {
-    fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>>;
-    fn required(&self) -> &[String];
-}
-
-macro_rules! impl_objlike {
-    ($obj:ty) => {
-        impl ObjectLike for $obj {
-            fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>> {
-                &self.properties
-            }
-            fn required(&self) -> &[String] {
-                &self.required
-            }
-        }
-    };
-}
-
-impl_objlike!(ObjectType);
-impl_objlike!(AnySchema);
-
 fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
     code.canonical_reason()
         .and_then(|reason| TypeName::try_from(reason.to_camel_case()).ok())
@@ -581,7 +504,10 @@ fn generate_rust_interface(
     }
 }
 
-fn generate_rust_dispatchers(routes: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_dispatchers(
+    routes: &Map<String, Vec<Route>>,
+    trait_name: &TypeName,
+) -> TokenStream {
     let mut dispatchers = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -720,19 +646,10 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 
     let trait_name = api_trait_name(&api);
 
-    debug!("Gather routes");
-    // collect Routes from the Paths object.
-    let routes = gather_routes(
-        &api.paths,
-        &schema_lookup,
-        &response_lookup,
-        &parameters_lookup,
-        &req_body_lookup,
-    )?;
-
-    // Collect types found within the api
+    // Walk the API to collect types and routes
     debug!("Gather types");
     let (type_lookup, routes) = walk::walk_api(&api)?;
+
     // Generate type definitions
     debug!("Generate API types");
     let rust_types = walk::generate_rust_types(&type_lookup)?;
