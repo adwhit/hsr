@@ -23,7 +23,7 @@ pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
 use actix_http::http::StatusCode;
-use actix_web::{Either, Error as AxError, HttpRequest, HttpResponse, Responder};
+use actix_web::{Error as ActixError, HttpRequest, HttpResponse, Responder};
 use std::fmt;
 
 /// An empty type which cannot be instantiated.
@@ -85,24 +85,15 @@ pub trait HasStatusCode {
     }
 }
 
-#[doc(hidden)]
-/// Helper function. Needs to be public because used 'implicitly' by hsr-codegen.
-pub fn result_to_either<A, B>(res: Result<A, B>) -> Either<A, B> {
-    match res {
-        Ok(a) => Either::A(a),
-        Err(b) => Either::B(b),
-    }
-}
-
 /// Errors that may be returned by the client, apart from those explicitly
 /// specified in the spec.
 ///
 /// This will handle bad connections, path errors, unreconginized statuses
 /// and any other 'unexpected errors'
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum ClientError {
     BadStatus(StatusCode),
-    Actix(AxError),
+    Actix(ActixError),
 }
 
 impl HasStatusCode for ClientError {}

@@ -28,7 +28,7 @@ fn build_types_simple() {
 
     // This is the complete expected code generation output
     // It should compile!
-    let expect = quote! {
+    let mut expect = quote! {
         use hsr::Void;
         use hsr::actix_web::{App, HttpServer};
         use hsr::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
@@ -125,7 +125,7 @@ fn build_types_simple() {
     .to_string();
     #[cfg(feature = "rustfmt")]
     {
-        let expect = hsr_codegen::prettify_code(expect).unwrap();
+        expect = hsr_codegen::prettify_code(expect).unwrap();
     }
     assert_diff(&code, &expect);
 }
