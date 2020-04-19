@@ -1,11 +1,11 @@
 [package]
 name = "hsr"
 version = "0.2.0"
-authors = ["jesskfulwood <jesskfulwood@gmail.com>"]
+authors = ["Alex Whitney <adwhit@fastmail.com>"]
 edition = "2018"
 description = "Build fast HTTP APIs fast, with Rust + OpenAPI"
-repository = "https://github.com/jesskfullwood/hsr"
-homepage = "https://github.com/jesskfullwood/hsr"
+repository = "https://github.com/adwhit/hsr"
+homepage = "https://github.com/adwhit/hsr"
 keywords = ["swagger", "openapi", "web", "REST", "actix-web"]
 license = "MIT"
 readme = "README.md"
