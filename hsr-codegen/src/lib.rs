@@ -371,8 +371,8 @@ impl fmt::Display for RoutePath {
                     path.push('/');
                     path.push_str(&p);
                 }
-                PathSegment::Parameter(_) => {
-                    path.push_str("/{}");
+                PathSegment::Parameter(p) => {
+                    path.push_str(&format!("/{{{}}}", p));
                 }
             }
         }
@@ -568,10 +568,9 @@ fn generate_rust_client(routes: &Map<String, Vec<Route>>, trait_name: &TypeName)
                 inner: ActixClient,
             }
 
-            #[hsr::async_trait::async_trait(?Send)]
-            impl #trait_name for Client {
-                type Error = ClientError;
-                fn new(domain: Url) -> Self {
+            impl Client {
+
+                pub fn new(domain: Url) -> Self {
                     Client {
                         domain: domain,
                         inner: ActixClient::new()
@@ -647,6 +646,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::{HasStatusCode, Void};
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
+                Error as ActixError,
                 web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData, ServiceConfig},
                 dev::HttpResponseBuilder,
                 middleware::Logger
@@ -671,7 +671,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         // Server
         #rust_server
         // Client
-        // #rust_client
+        #rust_client
     };
     let code = code.to_string();
     #[cfg(feature = "rustfmt")]

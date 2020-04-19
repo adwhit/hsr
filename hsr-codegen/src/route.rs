@@ -55,8 +55,9 @@ impl Route {
         }
         let enum_def = generate_enum_def(&enum_name, &variants);
 
-        let response_match_arms: Vec<_> = variants.iter().map(|(typename, typepath_opt)| {
-            match typepath_opt {
+        let response_match_arms: Vec<_> = variants
+            .iter()
+            .map(|(typename, typepath_opt)| match typepath_opt {
                 Some(_) => {
                     quote! {
                         #typename(inner) => {
@@ -71,8 +72,8 @@ impl Route {
                         }
                     }
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         quote! {
 
@@ -126,7 +127,7 @@ impl Route {
                     .collect()
             })
             .unwrap_or(Vec::new());
-        let body_arg = self.method.body_type().map(|body_ty| {
+        let body_arg_opt = self.method.body_type().map(|body_ty| {
             let body_ty = body_ty.canonicalize();
             let name = ident("payload");
             Some(quote! { #name: #body_ty, })
@@ -134,131 +135,115 @@ impl Route {
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
-            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #api_return_ty;
+            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg_opt) -> #api_return_ty;
         }
     }
 
     pub fn generate_client_impl(&self) -> TokenStream {
-        // TODO!
-        quote! {}
-        // let opid = &self.operation_id;
-        // let err_ty = &self.return_err_ty();
-        // let (ok_code, ok_ty) = &self.return_ty;
-        // let result_ty = &self.return_ty();
+        let opid = &self.operation_id;
+        let result_type = self.return_ty_name();
 
-        // let paths: Vec<_> = self
-        //     .path_args
-        //     .iter()
-        //     .map(|(id, ty)| quote! { #id: #ty })
-        //     .collect();
-        // let path_names = self.path_args.iter().map(|(id, _ty)| id);
-        // let path_template = self.path.build_template();
+        let (path_names, path_types): (Vec<_>, Vec<_>) = self
+            .path_args
+            .iter()
+            .map(|(id, ty)| (id, ty.canonicalize()))
+            .unzip();
 
-        // let queries: Vec<_> = self
-        //     .query_args
-        //     .iter()
-        //     .map(|(id, ty)| quote! { #id: #ty })
-        //     .collect();
+        let (query_names, query_types) = self
+            .query_params
+            .as_ref()
+            .map(|(_, params)| {
+                params
+                    .iter()
+                    .map(|(id, ty)| (id, ty.canonicalize()))
+                    .unzip()
+            })
+            .unwrap_or((Vec::new(), Vec::new()));
 
-        // let add_query_string_to_url = self.generate_query_type_name().map(|typ| {
-        //     let fields = self.query_args.iter().map(|(id, _)| id);
-        //     quote! {
-        //         {
-        //             let qstyp = #typ {
-        //                 #(#fields,)*
-        //             };
-        //             let qs = serde_urlencoded::to_string(qstyp).unwrap();
-        //             url.set_query(Some(&qs));
-        //         }
-        //     }
-        // });
+        let add_query_string_to_url = self.query_params.as_ref().map(|(type_path, params)| {
+            let type_name = type_path.canonicalize();
+            let fields = params.iter().map(|(id, _)| id);
+            quote! {
+                {
+                    // construct and instance of our query param type
+                    // then url-encode into the string
+                    let qstyp = #type_name {
+                        #(#fields,)*
+                    };
+                    let qs = serde_urlencoded::to_string(qstyp).unwrap();
+                    url.set_query(Some(&qs));
+                }
+            }
+        });
 
-        // let (body_arg, send_request) = match self.method.body_type() {
-        //     None => (None, quote! {.send()}),
-        //     Some(ref body_ty) => (
-        //         Some(quote! { payload: #body_ty, }),
-        //         quote! { .send_json(&payload) },
-        //     ),
-        // };
-        // let method = ident(&self.method);
+        let (body_arg_opt, send_request) = match self.method.body_type() {
+            None => (None, quote! {.send()}),
+            Some(ref body_type_path) => {
+                let body_name = body_type_path.canonicalize();
+                (
+                    Some(quote! { payload: #body_name, }),
+                    quote! { .send_json(&payload) },
+                )
+            }
+        };
+        let method = ident(&self.method);
+        let path_template = self.path.to_string();
+        let resp_match_arms: Vec<_> = self
+            .return_types
+            .iter()
+            .map(|(code, type_path)| {
+                let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
+                let variant = variant_from_status_code(code);
+                match type_path {
+                    Some(type_path) => {
+                        let type_name = type_path.canonicalize();
+                        quote! {
+                            #code_lit => {
+                                match resp
+                                    .json::<#type_name>()
+                                    .await {
+                                        Ok(body) => Result::Ok(#result_type::#variant(body)),
+                                        Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                    }
+                            }
+                        }
+                    }
+                    None => {
+                        quote! {
+                            #code_lit => {
+                                #variant
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
 
-        // fn err_match_arm(
-        //     code: &StatusCode,
-        //     err_ty: &TypeName,
-        //     err_ty_variant: &TypeName,
-        //     err_ty_ty: &Option<Type>,
-        // ) -> TokenStream {
-        //     todo!()
-        //     // let code = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
-        //     // if let Some(err_ty_ty) = err_ty_ty {
-        //     //     // We will return some deserialized JSON
-        //     //     quote! {
-        //     //         #code => {
-        //     //             match resp
-        //     //                 .json::<#err_ty_ty>()
-        //     //                 .await {
-        //     //                     Ok(json) => Err(#err_ty::#err_ty_variant(json)),
-        //     //                     Err(e) => Err(#err_ty::Error(ClientError::Actix(e.into())))
-        //     //                 }
-        //     //         }
-        //     //     }
-        //     // } else {
-        //     //     // Fieldless variant
-        //     //     quote! {
-        //     //         #code => {Err(#err_ty::#err_ty_variant)}
-        //     //     }
-        //     // }
-        // }
+        quote! {
+            // #[allow(unused_mut)]
+            pub async fn #opid(&self, #(#path_names: #path_types,)* #(#query_names: #query_types,)* #body_arg_opt)
+                               -> Result<#result_type, ClientError>
+            {
+                // Build up our request path
+                let path = format!(#path_template, #(#path_names = #path_names,)*);
+                let mut url = self.domain.join(&path).unwrap();
+                #add_query_string_to_url
 
-        // let ok_match_arm = {
-        //     let code = proc_macro2::Literal::u16_unsuffixed(ok_code.as_u16());
-        //     if let Some(ok_ty) = ok_ty {
-        //         // We will return some deserialized JSON
-        //         quote! {
-        //             #code => {
-        //                 resp
-        //                     .json::<#ok_ty>()
-        //                     .await
-        //                     .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))
-        //             }
-        //         }
-        //     } else {
-        //         quote! {
-        //             #code => {Ok(hsr::Success)}
-        //         }
-        //     }
-        // };
-
-        // let err_match_arms = self.err_tys.iter().map(|(status, mb_ty)| {
-        //     let variant_name = error_variant_from_status_code(&status);
-        //     err_match_arm(status, err_ty, &variant_name, mb_ty)
-        // });
-
-        // quote! {
-        //     #[allow(unused_mut)]
-        //     async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #result_ty {
-        //         // Build up our request path
-        //         let path = format!(#path_template, #(#path_names,)*);
-        //         let mut url = self.domain.join(&path).unwrap();
-        //         #add_query_string_to_url
-
-        //         let mut resp = self.inner
-        //             .request(Method::#method, url.as_str())
-        //             // Send, giving a future containing an HttpResponse
-        //             #send_request
-        //             .await
-        //             .map_err(|e| #err_ty::Error(ClientError::Actix(e.into())))?;
-        //         // We match on the status type to handle the return correctly
-        //         match resp.status().as_u16() {
-        //             #ok_match_arm
-        //             #(#err_match_arms)*
-        //             _ => {
-        //                 // default match arm
-        //                 Err(#err_ty::Error(ClientError::BadStatus(resp.status())))
-        //              }
-        //         }
-        //     }
-        // }
+                let mut resp = self.inner
+                    .request(Method::#method, url.as_str())
+                    // Send, giving a future containing an HttpResponse
+                    #send_request
+                    .await.map_err(ActixError::from)?;
+                // We match on the status type to handle the return correctly
+                match resp.status().as_u16() {
+                    #(#resp_match_arms)*
+                    _ => {
+                        // default match arm
+                        Err(ClientError::BadStatus(resp.status()))
+                     }
+                }
+            }
+        }
     }
 
     /// If there are multitple difference error types, construct an
