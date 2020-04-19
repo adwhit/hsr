@@ -40,9 +40,9 @@ impl Route {
 
     /// The name of the return type. If none are found, returns '()'.
     /// If both Success and Error types exist, will be a Result type
-    pub(crate) fn generate_return_ty(&self) -> TokenStream {
+    pub(crate) fn generate_return_type(&self) -> TokenStream {
         let enum_name = self.return_ty_name();
-        let mut variants: Vec<(TypeName, Option<TypePath>)> = self
+        let mut variant_pairs: Vec<(TypeName, Option<TypePath>)> = self
             .return_types
             .iter()
             .map(|(code, path)| (variant_from_status_code(code), path.clone()))
@@ -50,12 +50,12 @@ impl Route {
         let dflt_name: TypeName = "Default".parse().unwrap();
         match &self.default_return_type {
             DefaultResponse::None => {}
-            DefaultResponse::Anonymous => variants.push((dflt_name, None)),
-            DefaultResponse::Typed(path) => variants.push((dflt_name, Some(path.clone()))),
+            DefaultResponse::Anonymous => variant_pairs.push((dflt_name, None)),
+            DefaultResponse::Typed(path) => variant_pairs.push((dflt_name, Some(path.clone()))),
         }
-        let enum_def = generate_enum_def(&enum_name, &variants);
+        let enum_def = generate_enum_def(&enum_name, &variant_pairs);
 
-        let response_match_arms: Vec<_> = variants
+        let response_match_arms: Vec<_> = variant_pairs
             .iter()
             .map(|(typename, typepath_opt)| match typepath_opt {
                 Some(_) => {
@@ -75,6 +75,23 @@ impl Route {
             })
             .collect();
 
+        let status_matches: Vec<_> = self
+            .return_types
+            .iter()
+            .map(|(code, type_path_opt)| {
+                let var_name = variant_from_status_code(code);
+                let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
+                match type_path_opt {
+                    Some(_) => quote! {
+                        #var_name(_) => StatusCode::from_u16(#code_lit).unwrap()
+                    },
+                    None => quote! {
+                        #var_name => StatusCode::from_u16(#code_lit).unwrap()
+                    },
+                }
+            })
+            .collect();
+
         quote! {
 
             #enum_def
@@ -82,11 +99,9 @@ impl Route {
             impl HasStatusCode for #enum_name {
                 fn status_code(&self) -> StatusCode {
                     use #enum_name::*;
-                    todo!()
-                    // match self {
-                    //     #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
-                    //     #mb_default_status
-                    // }
+                    match self {
+                        #(#status_matches,)*
+                    }
                 }
             }
 
@@ -226,6 +241,7 @@ impl Route {
             {
                 // Build up our request path
                 let path = format!(#path_template, #(#path_names = #path_names,)*);
+                #[allow(unused_mut)]
                 let mut url = self.domain.join(&path).unwrap();
                 #add_query_string_to_url
 

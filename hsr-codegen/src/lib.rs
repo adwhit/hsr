@@ -619,7 +619,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     debug!("Generate response types");
     let rust_response_types: Vec<_> = routes
         .values()
-        .map(|routes| routes.iter().map(|route| route.generate_return_ty()))
+        .map(|routes| routes.iter().map(|route| route.generate_return_type()))
         .flatten()
         .collect();
 

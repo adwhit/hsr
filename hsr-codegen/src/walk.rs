@@ -560,7 +560,7 @@ fn generate_rust_type(
                         #descr
                         #derives
                         pub struct #name {
-                            #(#fieldnames: #fields),*
+                            #(pub #fieldnames: #fields),*
                         }
                     }
                 }
