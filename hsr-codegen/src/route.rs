@@ -53,31 +53,57 @@ impl Route {
             DefaultResponse::Anonymous => variants.push((dflt_name, None)),
             DefaultResponse::Typed(path) => variants.push((dflt_name, Some(path.clone()))),
         }
-        generate_enum_def(&enum_name, &variants)
+        let enum_def = generate_enum_def(&enum_name, &variants);
+
+        let response_match_arms: Vec<_> = variants.iter().map(|(typename, typepath_opt)| {
+            match typepath_opt {
+                Some(_) => {
+                    quote! {
+                        #typename(inner) => {
+                            HttpResponseBuilder::new(status_code).json(inner)
+                        }
+                    }
+                }
+                None => {
+                    quote! {
+                        #typename => {
+                            HttpResponseBuilder::new(status_code).finish()
+                        }
+                    }
+                }
+            }
+        }).collect();
+
+        quote! {
+
+            #enum_def
+
+            impl HasStatusCode for #enum_name {
+                fn status_code(&self) -> StatusCode {
+                    use #enum_name::*;
+                    todo!()
+                    // match self {
+                    //     #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
+                    //     #mb_default_status
+                    // }
+                }
+            }
+
+            impl Responder for #enum_name {
+                type Error = std::convert::Infallible;
+                type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
+                fn respond_to(self, _req: &HttpRequest) -> Self::Future {
+                    use #enum_name::*;
+                    let status_code = self.status_code();
+                    let resp = match self {
+                        #(#response_match_arms)*
+                    };
+                    fut_ok(resp)
+                }
+            }
+
+        }
     }
-
-    // quote! {
-    //     impl HasStatusCode for #name {
-    //         fn status_code(&self) -> StatusCode {
-    //             use #name::*;
-    //             match self {
-    //                 #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
-    //                 #mb_default_status
-    //             }
-    //         }
-    //     }
-
-    //     impl Responder for #name {
-    //         type Error = Void;
-    //         type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
-
-    //         fn respond_to(self, _: &HttpRequest) -> Self::Future {
-    //             let status = self.status_code();
-    //             // TODO should also serialize object if possible/necessary
-    //             fut_ok(HttpResponse::build(status).finish())
-    //         }
-    //     }
-    // }
 
     /// Generate the function signature compatible with the Route
     pub(crate) fn generate_api_signature(&self) -> TokenStream {
