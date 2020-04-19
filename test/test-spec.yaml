@@ -1,0 +1,52 @@
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Test
+servers:
+  - url: http://localhost:8000
+
+paths:
+  # Simplest possible route (?)
+  /status:
+    get:
+      operationId: status
+      responses:
+        '200':
+          description: "Ok"
+
+  /{name}/{age}:
+    get:
+      summary: echo name and age
+      operationId: echoNameAndAge
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: User name
+          schema:
+            type: string
+        - name: age
+          in: path
+          required: true
+          description: User age
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Hello
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
+components:
+  schemas:
+    Hello:
+      required:
+        - name
+        - age
+      properties:
+        name:
+          type: string
+        age:
+          type: integer

@@ -154,7 +154,12 @@ impl Route {
         }
     }
 
-    pub fn generate_client_impl(&self) -> TokenStream {
+    /// Generate the client implementation.
+    ///
+    /// It takes a bit of care to build up this code. Unfortunately we can't just implement
+    /// the API trait because we have to be able to return connection errors etc
+    /// Which requires a `Result` type.
+    pub(crate) fn generate_client_impl(&self) -> TokenStream {
         let opid = &self.operation_id;
         let result_type = self.return_ty_name();
 
@@ -226,7 +231,8 @@ impl Route {
                     None => {
                         quote! {
                             #code_lit => {
-                                #variant
+                                // could check body is empty here?
+                                Result::Ok(#result_type::#variant)
                             }
                         }
                     }
@@ -235,13 +241,16 @@ impl Route {
             .collect();
 
         quote! {
-            // #[allow(unused_mut)]
-            pub async fn #opid(&self, #(#path_names: #path_types,)* #(#query_names: #query_types,)* #body_arg_opt)
-                               -> Result<#result_type, ClientError>
+            #[allow(unused_mut)]
+            pub async fn #opid(
+                &self,
+                #(#path_names: #path_types,)*
+                #(#query_names: #query_types,)*
+                #body_arg_opt
+            ) -> Result<#result_type, ClientError>
             {
                 // Build up our request path
                 let path = format!(#path_template, #(#path_names = #path_names,)*);
-                #[allow(unused_mut)]
                 let mut url = self.domain.join(&path).unwrap();
                 #add_query_string_to_url
 

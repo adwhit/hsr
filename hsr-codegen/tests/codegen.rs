@@ -29,7 +29,6 @@ fn build_types_simple() {
     // This is the complete expected code generation output
     // It should compile!
     let mut expect = quote! {
-        use hsr::Void;
         use hsr::actix_web::{App, HttpServer};
         use hsr::actix_web::web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData};
         use hsr::futures3::future::{BoxFuture as BoxFuture3, FutureExt, TryFutureExt};

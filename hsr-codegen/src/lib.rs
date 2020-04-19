@@ -457,10 +457,7 @@ fn generate_rust_interface(
     quote! {
         #descr
         #[hsr::async_trait::async_trait(?Send)]
-        pub trait #trait_name: 'static {
-            type Error: HasStatusCode;
-            fn new(host: Url) -> Self;
-
+        pub trait #trait_name: 'static + Send + Sync {
             #methods
         }
     }
@@ -504,13 +501,13 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
         pub mod server {
             use super::*;
 
-            fn configure_hsr<A: #trait_name + Send + Sync>(cfg: &mut actix_web::web::ServiceConfig) {
+            fn configure_hsr<A: #trait_name>(cfg: &mut actix_web::web::ServiceConfig) {
                 cfg #(.service(#resources))*;
             }
 
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
-            pub async fn serve<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<()> {
+            pub async fn serve<A: #trait_name>(api: A, cfg: hsr::Config) -> std::io::Result<()> {
                 // We register the user-supplied Api as a Data item.
                 // You might think it would be cleaner to generate out API trait
                 // to not take "self" at all (only inherent impls) and then just
@@ -519,7 +516,7 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
                 // handlers, so we kill two birds with one stone by stashing the Api
                 // as data, pulling then it back out upon each request and calling
                 // the handler as a method
-                let api = AxData::new(A::new(cfg.host.clone()));
+                let api = AxData::new(api);
 
                 let server = HttpServer::new(move || {
                     App::new()
@@ -544,7 +541,7 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
     server
 }
 
-fn generate_rust_client(routes: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_client(routes: &Map<String, Vec<Route>>) -> TokenStream {
     let mut method_impls = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -633,7 +630,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     let rust_server = generate_rust_server(&routes, &trait_name);
 
     debug!("Generate client");
-    let rust_client = generate_rust_client(&routes, &trait_name);
+    let rust_client = generate_rust_client(&routes);
 
     let code = quote! {
         #[allow(dead_code)]
@@ -643,7 +640,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
 
         mod __imports {
-            pub use hsr::{HasStatusCode, Void};
+            pub use hsr::HasStatusCode;
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
                 Error as ActixError,

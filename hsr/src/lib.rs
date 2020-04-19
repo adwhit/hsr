@@ -26,37 +26,6 @@ use actix_http::http::StatusCode;
 use actix_web::{Error as ActixError, HttpRequest, HttpResponse, Responder};
 use std::fmt;
 
-/// An empty type which cannot be instantiated.
-///
-/// Useful because Future1 demands that we return an Err type, even when
-/// we don't want to or don't have one. Then we can return a Void, essentially
-/// the same as the '!' type but with various trait impls
-#[doc(hidden)]
-pub enum Void {}
-
-impl fmt::Debug for Void {
-    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unreachable!()
-    }
-}
-
-impl fmt::Display for Void {
-    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unreachable!()
-    }
-}
-
-impl Responder for Void {
-    type Error = ();
-    type Future = futures::future::Ready<Result<HttpResponse, ()>>;
-
-    fn respond_to(self, _: &HttpRequest) -> Self::Future {
-        unreachable!()
-    }
-}
-
-impl actix_web::ResponseError for Void {}
-
 #[derive(Debug, Copy, Clone)]
 /// Actix-web responder that always returns Ok
 // replacement for returning bare '()' which was removed in 2.0
@@ -90,19 +59,15 @@ pub trait HasStatusCode {
 ///
 /// This will handle bad connections, path errors, unreconginized statuses
 /// and any other 'unexpected errors'
-#[derive(Debug, derive_more::From)]
+#[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    #[error("Unknown status code: {:?}", _0)]
     BadStatus(StatusCode),
-    Actix(ActixError),
+    #[error("Actix error: {}", _0)]
+    Actix(#[from] ActixError),
 }
 
 impl HasStatusCode for ClientError {}
-
-/// An opaque error that may be returned to deliver a 500 Internal Server Error
-#[derive(Debug, Clone, Copy)]
-pub struct ServerError;
-
-impl HasStatusCode for ServerError {}
 
 pub fn configure_spec(
     cfg: &mut actix_web::web::ServiceConfig,
