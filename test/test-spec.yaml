@@ -14,7 +14,41 @@ paths:
         '200':
           description: "Ok"
 
-  /{name}/{age}:
+  /oneParam/{first}:
+    get:
+      operationId: one_param
+      parameters:
+        - name: first
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: string
+
+  /oneParam/{first}:
+    get:
+      operationId: one_param
+      parameters:
+        - name: first
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: string
+
+  /echo/{name}/{age}:
     get:
       summary: echo name and age
       operationId: echoNameAndAge

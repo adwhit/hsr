@@ -8,10 +8,16 @@ impl TestApi for Api {
         api::Status::Ok
     }
 
+    async fn one_param(&self, name: String) -> api::OneParam {
+        api::OneParam::Ok(name)
+    }
+
     async fn echo_name_and_age(&self, name: String, age: i64) -> api::EchoNameAndAge {
         api::EchoNameAndAge::Ok(api::Hello { name, age })
     }
 }
+
+// TODO make this into a 'normal' rust test suite not just a big main function
 
 #[actix_rt::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,12 +41,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("/status");
     client.status().await?;
 
-    println!("/{{name}}/{{age}}");
-    let greeting = client
+    println!("/oneParam/{{name}}");
+    let name = client.one_param("Alex".into()).await?;
+    assert_eq!(name, api::OneParam::Ok("Alex".into()));
+
+    println!("/echo/{{name}}/{{age}}");
+    let echo = client
         .echo_name_and_age("Uncle Alex".to_string(), 33)
         .await?;
 
-    println!("{:?}", greeting);
+    assert_eq!(
+        echo,
+        api::EchoNameAndAge::Ok(api::Hello {
+            name: "UncleAlex".into(),
+            age: 33
+        })
+    );
 
     Ok(())
 }
