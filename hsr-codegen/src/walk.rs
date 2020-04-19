@@ -15,8 +15,8 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, error_variant_from_status_code, get_derive_tokens, route::Route, unwrap_ref,
-    ApiPath, Error, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath,
+    dereference, get_derive_tokens, route::Route, unwrap_ref, variant_from_status_code, ApiPath,
+    Error, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath,
     SchemaLookup, StatusCode, TypeName, TypePath,
 };
 use proc_macro2::Ident as QIdent;
@@ -60,11 +60,6 @@ enum TypeInner {
     AllOf(Vec<ReferenceOr<Type>>),
     OneOf(Vec<ReferenceOr<TypePath>>),
     Struct(Struct),
-    // This is a special case, obviously
-    ErrorEnum {
-        errors: Vec<(StatusCode, Option<TypePath>)>,
-        default: Option<TypePath>,
-    },
 }
 
 impl TypeInner {
@@ -302,7 +297,7 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let (return_ty, err_ty) =
+    let (return_types, default_return_type) =
         walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
 
     let route = Route::new(
@@ -312,8 +307,8 @@ fn walk_operation(
         route_path.clone(),
         path_args,
         query_params,
-        return_ty,
-        err_ty,
+        return_types,
+        default_return_type,
     );
 
     Ok(route)
@@ -345,71 +340,49 @@ fn walk_contents(
         .transpose()
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum DefaultResponse {
+    None,
+    Anonymous,
+    Typed(TypePath),
+}
+
 fn walk_responses(
     resps: &openapiv3::Responses,
     path: ApiPath,
     type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<((StatusCode, Option<TypePath>), TypePath)> {
-    let ((success_code, success_resp), errors) = {
-        // Check responses are valid status codes
-        // We only support 2XX (success) and 4XX (error) codes (but not ranges)
-        let mut success = None;
-        let mut errors = vec![];
-        for (code, resp) in resps.responses.iter() {
-            let status = match code {
+) -> Result<(Map<StatusCode, Option<TypePath>>, DefaultResponse)> {
+    let response_tys: Map<StatusCode, Option<TypePath>> = resps
+        .responses
+        .iter()
+        .map(|(code, resp)| {
+            let code = match code {
                 ApiStatusCode::Code(v) => {
                     StatusCode::from_u16(*v).map_err(|_| Error::BadStatusCode(code.clone()))
                 }
                 _ => return Err(Error::BadStatusCode(code.clone())),
             }?;
-            if status.is_success() {
-                if success.replace((status, resp)).is_some() {
-                    return Err(Error::Todo("Expected exactly one 'success' status".into()));
-                }
-            } else if status.is_client_error() {
-                errors.push((status, resp))
-            } else {
-                return Err(Error::Todo("Only 2XX and 4XX status codes allowed".into()));
-            }
-        }
-        let success = success.ok_or_else(|| Error::Todo("No success code specified".into()))?;
-        (success, errors)
-    };
+            let resp = dereference(resp, &components.responses)?;
+            walk_response(resp, path.clone(), type_index).map(|pth| (code, pth))
+        })
+        .collect::<Result<_>>()?;
 
-    let success = {
-        let path = path.clone().push(success_code.as_u16().to_string());
-        let resp = dereference(success_resp, &components.responses)?;
-        (success_code, walk_response(resp, path, type_index)?)
-    };
-
-    let default = resps
+    let dflt_ty = resps
         .default
         .as_ref()
-        .map(|dflt| {
+        .map::<Result<DefaultResponse>, _>(|dflt| {
             let resp = dereference(dflt, &components.responses)?;
             let path = path.clone().push("default");
-            walk_response(&resp, path, type_index)
+            let dflt = walk_response(&resp, path, type_index)?
+                .map(|path| DefaultResponse::Typed(path))
+                .unwrap_or(DefaultResponse::Anonymous);
+            Ok(dflt)
         })
         .transpose()?
-        .flatten();
+        .unwrap_or(DefaultResponse::None);
 
-    let errors = errors
-        .into_iter()
-        .map(|(code, resp)| {
-            let path = path.clone().push(code.as_u16().to_string());
-            let resp = dereference(resp, &components.responses)?;
-            let ty = walk_response(&resp, path, type_index)?;
-            Ok((code, ty))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    // We punt the nicities of a good error definition until later
-    let errty = TypeInner::ErrorEnum { errors, default }.no_meta();
-    let err_path = TypePath::from(path.push("errors"));
-    type_index.insert(err_path.clone(), ReferenceOr::Item(errty));
-
-    Ok((success, err_path))
+    Ok((response_tys, dflt_ty))
 }
 
 fn walk_response(
@@ -591,9 +564,6 @@ fn generate_rust_type(
                         }
                     }
                 }
-                T::ErrorEnum { errors, default } => {
-                    generate_error_enum_def(&name, errors.as_slice(), default)
-                }
             }
         }
     };
@@ -602,73 +572,27 @@ fn generate_rust_type(
 
 /// If there are multitple difference error types, construct an
 /// enum to hold them all. If there is only one or none, don't bother.
-fn generate_error_enum_def(
+pub(crate) fn generate_enum_def(
     name: &TypeName,
-    errors: &[(StatusCode, Option<TypePath>)],
-    default: &Option<TypePath>,
+    variants_info: &[(TypeName, Option<TypePath>)],
 ) -> TokenStream {
     let mut variants = vec![];
-    let mut variant_matches = vec![];
-    let mut status_codes = vec![];
-    for (code, mb_ty) in errors {
-        status_codes.push(code.as_u16());
-        let variant_name = error_variant_from_status_code(&code);
-        match mb_ty.as_ref() {
-            Some(ty) => {
-                let varty = ty.canonicalize();
+    for (variant_name, variant_type_path_opt) in variants_info {
+        match variant_type_path_opt.as_ref() {
+            Some(path) => {
+                let varty = path.canonicalize();
                 variants.push(quote! { #variant_name(#varty) });
-                variant_matches.push(quote! { #variant_name(_) });
             }
             None => {
                 variants.push(quote! { #variant_name });
-                variant_matches.push(quote! { #variant_name });
             }
         }
     }
-    // maybe add a default variant
-    let (mb_default_variant, mb_default_status) = match default.as_ref().map(TypePath::canonicalize)
-    {
-        Some(ref ty) => (
-            Some(quote! { Default(#ty), }),
-            Some(quote! { Default(e) => e.status_code(), }),
-        ),
-        None => (None, None),
-    };
     let derives = get_derive_tokens();
     quote! {
         #derives
-        pub enum #name<E: HasStatusCode> {
+        pub enum #name {
             #(#variants,)*
-            #mb_default_variant
-            Error(E)
-        }
-
-        impl<E: HasStatusCode> From<E> for #name<E> {
-            fn from(e: E) -> Self {
-                Self::Error(e)
-            }
-        }
-
-        impl<E: HasStatusCode> HasStatusCode for #name<E> {
-            fn status_code(&self) -> StatusCode {
-                use #name::*;
-                match self {
-                    #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
-                    #mb_default_status
-                    Error(e) => e.status_code()
-                }
-            }
-        }
-
-        impl<E: HasStatusCode> Responder for #name<E> {
-            type Error = Void;
-            type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
-
-            fn respond_to(self, _: &HttpRequest) -> Self::Future {
-                let status = self.status_code();
-                // TODO should also serialize object if possible/necessary
-                fut_ok(HttpResponse::build(status).finish())
-            }
         }
     }
 }

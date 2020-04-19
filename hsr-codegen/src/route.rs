@@ -5,8 +5,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use std::convert::TryFrom;
+use std::ops::Deref;
 
-use crate::walk::Type;
+use crate::walk::{generate_enum_def, DefaultResponse, Type};
 use crate::*;
 
 /// Route contains all the information necessary to contruct the API
@@ -20,8 +21,8 @@ pub(crate) struct Route {
     path: RoutePath,
     path_args: Map<Ident, TypePath>,
     query_params: Option<(TypePath, Map<Ident, TypePath>)>,
-    return_ty: (StatusCode, Option<TypePath>),
-    err_ty: TypePath,
+    return_types: Map<StatusCode, Option<TypePath>>,
+    default_return_type: DefaultResponse,
 }
 
 impl Route {
@@ -33,28 +34,55 @@ impl Route {
         &self.operation_id
     }
 
-    /// Fetch the name of the return type identified as an error, if it exists.
-    /// If there are multiple error return types, this will give the name of an enum
-    /// which can hold any of them
-    fn return_err_ty(&self) -> TypeName {
-        TypeName::try_from(format!("{}Error", &*self.operation_id.to_camel_case())).unwrap()
+    fn return_ty_name(&self) -> TypeName {
+        TypeName::from_str(&self.operation_id.deref().to_camel_case()).unwrap()
     }
 
     /// The name of the return type. If none are found, returns '()'.
     /// If both Success and Error types exist, will be a Result type
-    fn return_ty(&self) -> TokenStream {
-        let ok = match self.return_ty.1.as_ref().map(TypePath::canonicalize) {
-            Some(ty) => quote! { #ty },
-            None => quote! { hsr::Success },
-        };
-        let err = self.return_err_ty();
-        quote! { std::result::Result<#ok, #err<Self::Error>> }
+    pub(crate) fn generate_return_ty(&self) -> TokenStream {
+        let enum_name = self.return_ty_name();
+        let mut variants: Vec<(TypeName, Option<TypePath>)> = self
+            .return_types
+            .iter()
+            .map(|(code, path)| (variant_from_status_code(code), path.clone()))
+            .collect();
+        let dflt_name: TypeName = "Default".parse().unwrap();
+        match &self.default_return_type {
+            DefaultResponse::None => {}
+            DefaultResponse::Anonymous => variants.push((dflt_name, None)),
+            DefaultResponse::Typed(path) => variants.push((dflt_name, Some(path.clone()))),
+        }
+        generate_enum_def(&enum_name, &variants)
     }
 
+    // quote! {
+    //     impl HasStatusCode for #name {
+    //         fn status_code(&self) -> StatusCode {
+    //             use #name::*;
+    //             match self {
+    //                 #(#variant_matches => StatusCode::from_u16(#status_codes).unwrap(),)*
+    //                 #mb_default_status
+    //             }
+    //         }
+    //     }
+
+    //     impl Responder for #name {
+    //         type Error = Void;
+    //         type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
+
+    //         fn respond_to(self, _: &HttpRequest) -> Self::Future {
+    //             let status = self.status_code();
+    //             // TODO should also serialize object if possible/necessary
+    //             fut_ok(HttpResponse::build(status).finish())
+    //         }
+    //     }
+    // }
+
     /// Generate the function signature compatible with the Route
-    pub fn generate_signature(&self) -> TokenStream {
+    pub(crate) fn generate_api_signature(&self) -> TokenStream {
         let opid = &self.operation_id;
-        let return_ty = self.return_ty();
+        let api_return_ty = self.return_ty_name();
         let paths: Vec<_> = self
             .path_args
             .iter()
@@ -80,7 +108,7 @@ impl Route {
         let docs = self.summary.as_ref().map(doc_comment);
         quote! {
             #docs
-            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #return_ty;
+            async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg) -> #api_return_ty;
         }
     }
 
@@ -228,17 +256,20 @@ impl Route {
             .map(|(name, path)| (name, path.canonicalize()))
             .unzip();
         let path_names = &path_names;
+        // TODO we should do this in one tuple, not multiple paths
+        let path_func_args = quote! {#(#path_names: AxPath<#path_tys>,)*};
 
-        let query_keys = &self
+        // query args handling
+        let query_param_fields = &self
             .query_params
             .as_ref()
             .map(|(_, params)| params.keys().collect::<Vec<_>>())
             .unwrap_or_default();
-        let (query_arg, query_destructure) = {
+        let (query_arg_opt, query_destructure_opt) = {
             self.query_params.as_ref().map(|(name, _params)| {
                 let name = name.canonicalize();
                 let query_destructure = quote! {
-                    let #name { #(#query_keys),* } = query.into_inner();
+                    let #name { #(#query_param_fields),* } = query.into_inner();
                 };
                 let query_arg = quote! {
                     query: AxQuery<#name>
@@ -248,7 +279,7 @@ impl Route {
         }
         .unwrap_or((None, None));
 
-        let (body_arg, body_ident) = self
+        let (body_arg_opt, body_ident_opt) = self
             .method
             .body_type()
             .map(TypePath::canonicalize)
@@ -260,44 +291,24 @@ impl Route {
             })
             .unwrap_or((None, None));
 
-        let return_ty = &self
-            .return_ty
-            .1
-            .as_ref()
-            .map(TypePath::canonicalize)
-            .map(|ty| quote! { AxJson<#ty> })
-            .unwrap_or(quote! { hsr::Success });
-        let return_err_ty = self.return_err_ty();
-
-        // If return 'Ok' type is not null, we wrap it in AxJson
-        let maybe_wrap_return_val = self.return_ty.1.as_ref().map(|_| {
-            quote! { .map(AxJson) }
-        });
-
-        let ok_status_code = self.return_ty.0.as_u16();
+        let return_ty = self.return_ty_name();
 
         let code = quote! {
             async fn #opid<A: #trait_name + Send + Sync>(
                 data: AxData<A>,
-                #(#path_names: AxPath<#path_tys>,)*
-                #query_arg
-                #body_arg
-            ) -> AxEither<(#return_ty, StatusCode), #return_err_ty<A::Error>> {
+                #path_func_args
+                #query_arg_opt
+                #body_arg_opt
+            ) -> #return_ty {
 
+                // destructure query parameter into variables, if any
+                #query_destructure_opt
                 // call our API handler function with requisite arguments
-                #query_destructure
-                let out = data.#opid(
-                    // TODO we should destructure everything through pattern-matching the signature
+                data.#opid(
                     #(#path_names.into_inner(),)*
-                    #(#query_keys,)*
-                    #body_ident
-                ).await;
-                let out = out
-                // wrap returnval in AxJson, if necessary
-                    #maybe_wrap_return_val
-                // give outcome a status code (simple way of overriding the Responder return type)
-                .map(|return_val| (return_val, StatusCode::from_u16(#ok_status_code).unwrap()));
-                hsr::result_to_either(out)
+                    #(#query_param_fields,)*
+                    #body_ident_opt
+                ).await
             }
         };
         code

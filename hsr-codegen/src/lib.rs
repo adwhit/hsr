@@ -102,7 +102,7 @@ fn dereference<'a, T>(
 }
 
 fn api_trait_name(api: &OpenAPI) -> TypeName {
-    TypeName::try_from(format!("{}Api", api.info.title.to_camel_case())).unwrap()
+    TypeName::from_str(&format!("{}Api", api.info.title.to_camel_case())).unwrap()
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
@@ -322,7 +322,7 @@ impl TypePath {
             rest => rest,
         };
         let joined = parts.join(" ");
-        TypeName::try_from(joined.to_camel_case()).unwrap()
+        TypeName::from_str(&joined.to_camel_case()).unwrap()
     }
 }
 
@@ -332,14 +332,14 @@ impl TypePath {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display, Deref)]
 struct TypeName(String);
 
-impl TryFrom<String> for TypeName {
-    type Error = Error;
-    fn try_from(val: String) -> Result<Self> {
+impl FromStr for TypeName {
+    type Err = Error;
+    fn from_str(val: &str) -> Result<Self> {
         let camel = val.to_camel_case();
         if val == camel {
-            Ok(TypeName(val))
+            Ok(TypeName(camel))
         } else {
-            Err(Error::BadTypeName(val))
+            Err(Error::BadTypeName(val.to_string()))
         }
     }
 }
@@ -423,10 +423,10 @@ impl RoutePath {
     }
 }
 
-fn error_variant_from_status_code(code: &StatusCode) -> TypeName {
+pub(crate) fn variant_from_status_code(code: &StatusCode) -> TypeName {
     code.canonical_reason()
-        .and_then(|reason| TypeName::try_from(reason.to_camel_case()).ok())
-        .unwrap_or(TypeName::try_from(format!("E{}", code.as_str())).unwrap())
+        .and_then(|reason| reason.to_camel_case().parse().ok())
+        .unwrap_or_else(|| format!("Status{}", code.as_str()).parse().unwrap())
 }
 
 fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
@@ -451,7 +451,7 @@ fn generate_rust_interface(
     let descr = doc_comment(format!("Api generated from '{}' spec", title));
     for (_, route_methods) in routes {
         for route in route_methods {
-            methods.extend(route.generate_signature());
+            methods.extend(route.generate_api_signature());
         }
     }
     quote! {
@@ -614,7 +614,15 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 
     // Generate type definitions
     debug!("Generate API types");
-    let rust_types = walk::generate_rust_types(&type_lookup)?;
+    let rust_api_types = walk::generate_rust_types(&type_lookup)?;
+
+    // Response types are slightly special cases (they need to implement Responder
+    debug!("Generate response types");
+    let rust_response_types: Vec<_> = routes
+        .values()
+        .map(|routes| routes.iter().map(|route| route.generate_return_ty()))
+        .flatten()
+        .collect();
 
     debug!("Generate API trait");
     let rust_trait = generate_rust_interface(&routes, &api.info.title, &trait_name);
@@ -653,7 +661,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         use __imports::*;
 
         // Type definitions
-        #rust_types
+        #rust_api_types
+        #(#rust_response_types)*
         // Interface definition
         #rust_trait
         // Dispatcher definitions
@@ -661,7 +670,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         // Server
         #rust_server
         // Client
-        #rust_client
+        // #rust_client
     };
     let code = code.to_string();
     #[cfg(feature = "rustfmt")]
