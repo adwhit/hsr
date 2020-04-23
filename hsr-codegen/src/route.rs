@@ -44,55 +44,76 @@ impl Route {
     /// If both Success and Error types exist, will be a Result type
     pub(crate) fn generate_return_type(&self) -> TokenStream {
         let enum_name = self.return_ty_name();
-        let mut variant_pairs: Vec<(TypeName, Option<TypePath>)> = self
+        let variant_pairs: Vec<(TypeName, Option<TypePath>)> = self
             .return_types
             .iter()
             .map(|(code, path)| (variant_from_status_code(code), path.clone()))
             .collect();
-        let dflt_name: TypeName = "Default".parse().unwrap();
-        match &self.default_return_type {
-            DefaultResponse::None => {}
-            DefaultResponse::Anonymous => variant_pairs.push((dflt_name, None)),
-            DefaultResponse::Typed(path) => variant_pairs.push((dflt_name, Some(path.clone()))),
-        }
-        let enum_def = generate_enum_def(&enum_name, &variant_pairs);
+        let enum_def = generate_enum_def(&enum_name, &variant_pairs, &self.default_return_type);
 
-        let response_match_arms: Vec<_> = variant_pairs
-            .iter()
-            .map(|(typename, typepath_opt)| match typepath_opt {
-                Some(_) => {
+        let status_matches = {
+            let mut status_matches: Vec<_> = self
+                .return_types
+                .iter()
+                .map(|(code, type_path_opt)| {
+                    let var_name = variant_from_status_code(code);
+                    let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
+                    match type_path_opt {
+                        Some(_) => quote! {
+                            #var_name(_) => StatusCode::from_u16(#code_lit).unwrap()
+                        },
+                        None => quote! {
+                            #var_name => StatusCode::from_u16(#code_lit).unwrap()
+                        },
+                    }
+                })
+                .collect();
+            match &self.default_return_type {
+                DefaultResponse::None => {}
+                DefaultResponse::Anonymous | DefaultResponse::Typed(_) => status_matches.push(
+                    // TODO print warning on bad code
                     quote! {
-                        #typename(inner) => {
-                            HttpResponseBuilder::new(status_code).json(inner)
+                        Default { status_code, .. } => {
+                            StatusCode::from_u16(*status_code)
+                                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                        }
+                    },
+                ),
+            }
+            status_matches
+        };
+
+        let response_match_arms = {
+            let mut response_match_arms: Vec<_> = variant_pairs
+                .iter()
+                .map(|(typename, typepath_opt)| match typepath_opt {
+                    Some(_) => {
+                        quote! {
+                            #typename(inner) => {
+                                HttpResponseBuilder::new(status_code).json(inner)
+                            }
                         }
                     }
-                }
-                None => {
-                    quote! {
-                        #typename => {
-                            HttpResponseBuilder::new(status_code).finish()
+                    None => {
+                        quote! {
+                            #typename => {
+                                HttpResponseBuilder::new(status_code).finish()
+                            }
                         }
                     }
-                }
-            })
-            .collect();
-
-        let status_matches: Vec<_> = self
-            .return_types
-            .iter()
-            .map(|(code, type_path_opt)| {
-                let var_name = variant_from_status_code(code);
-                let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
-                match type_path_opt {
-                    Some(_) => quote! {
-                        #var_name(_) => StatusCode::from_u16(#code_lit).unwrap()
-                    },
-                    None => quote! {
-                        #var_name => StatusCode::from_u16(#code_lit).unwrap()
-                    },
-                }
-            })
-            .collect();
+                })
+                .collect();
+            match &self.default_return_type {
+                DefaultResponse::None => {}
+                DefaultResponse::Anonymous => response_match_arms.push(quote! {
+                    Default { .. } => HttpResponseBuilder::new(status_code).finish()
+                }),
+                DefaultResponse::Typed(_) => response_match_arms.push(quote! {
+                    Default { body, .. } => HttpResponseBuilder::new(status_code).json(body)
+                }),
+            };
+            response_match_arms
+        };
 
         quote! {
 

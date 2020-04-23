@@ -19,6 +19,16 @@ impl TestApi for Api {
         api::TwoQueryParams::Ok(api::Hello { myName, my_age })
     }
 
+    async fn ok_error_default(&self, return_code: i64) -> api::OkErrorDefault {
+        match return_code {
+            200 => api::OkErrorDefault::Ok,
+            400 => api::OkErrorDefault::BadRequest,
+            other => api::OkErrorDefault::Default {
+                status_code: other as u16,
+            },
+        }
+    }
+
     async fn nestedResponse(&self) -> api::NestedResponse {
         api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
             first: api::PathsNestedResponseTypeGetResponsesFirst {
@@ -71,6 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 my_age: 33
             })
         );
+    }
+
+    {
+        let rtn = client.ok_error_default(200).await?;
+        assert_eq!(rtn, api::OkErrorDefault::Ok);
+
+        let rtn = client.ok_error_default(400).await?;
+        assert_eq!(rtn, api::OkErrorDefault::BadRequest);
+
+        let rtn = client.ok_error_default(201).await?;
+        assert_eq!(rtn, api::OkErrorDefault::Default { status_code: 201 });
+
+        let rtn = client.ok_error_default(-1).await?;
+        assert_eq!(rtn, api::OkErrorDefault::Default { status_code: 500 });
     }
 
     {

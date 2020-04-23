@@ -606,6 +606,7 @@ fn generate_rust_type(
 pub(crate) fn generate_enum_def(
     name: &TypeName,
     variants_info: &[(TypeName, Option<TypePath>)],
+    dflt: &DefaultResponse,
 ) -> TokenStream {
     let mut variants = vec![];
     for (variant_name, variant_type_path_opt) in variants_info {
@@ -617,6 +618,19 @@ pub(crate) fn generate_enum_def(
             None => {
                 variants.push(quote! { #variant_name });
             }
+        }
+    }
+    match dflt {
+        DefaultResponse::None => {}
+        DefaultResponse::Anonymous => variants.push(quote! {Default { status_code: u16 }}),
+        DefaultResponse::Typed(path) => {
+            let varty = path.canonicalize();
+            variants.push(quote! {
+                Default {
+                    status_code: u16,
+                    body: #varty
+                }
+            })
         }
     }
     let derives = get_derive_tokens();
