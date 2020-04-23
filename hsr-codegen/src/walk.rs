@@ -24,6 +24,22 @@ use proc_macro2::Ident as QIdent;
 
 pub(crate) type TypeLookup = BTreeMap<TypePath, ReferenceOr<Type>>;
 
+fn lookup_type_recursive<'a>(
+    item: &'a ReferenceOr<Type>,
+    lookup: &'a TypeLookup,
+) -> Result<&'a Type> {
+    match item {
+        ReferenceOr::Reference { reference } => {
+            let path = TypePath::from_reference(reference)?.into();
+            lookup
+                .get(&path)
+                .ok_or_else(|| Error::BadReference(reference.clone()))
+                .and_then(|refr| lookup_type_recursive(refr, lookup))
+        }
+        ReferenceOr::Item(typ) => Ok(typ),
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct Type {
     meta: SchemaData,
@@ -46,6 +62,12 @@ enum Primitive {
     I64,
     #[display(fmt = "bool")]
     Bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum IsRequired {
+    Yes,
+    No,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +107,8 @@ impl TypeInner {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Struct {
-    fields: Vec<Ident>,
+    // annoyingly each field must carry around whether it is 'required'
+    fields: Vec<(Ident, IsRequired)>,
 }
 
 impl Struct {
@@ -105,7 +128,12 @@ impl Struct {
             let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
             assert!(type_index.insert(type_path, ty.clone()).is_none());
-            fields.push(name.parse()?);
+            let required = if required_args.contains(name) {
+                IsRequired::Yes
+            } else {
+                IsRequired::No
+            };
+            fields.push((name.parse()?, required));
         }
         Ok(Self { fields })
     }
@@ -250,6 +278,12 @@ fn walk_operation(
                     if !expected_route_params.remove(parameter_data.name.as_str()) {
                         invalid!("path parameter '{}' not found in path", parameter_data.name)
                     }
+                    if !parameter_data.required {
+                        invalid!(
+                            "Path parameter '{}' must be 'required'",
+                            parameter_data.name
+                        )
+                    }
                     let path = path.clone().push("path").push(&parameter_data.name);
                     let name: Ident = parameter_data.name.parse()?;
                     path_params.insert(name, TypePath::from(path.clone()));
@@ -285,7 +319,11 @@ fn walk_operation(
     } else {
         // construct a path param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<Ident> = path_params.keys().cloned().collect();
+        let fields: Vec<(Ident, IsRequired)> = path_params
+            .keys()
+            .cloned()
+            .map(|v| (v, IsRequired::Yes))
+            .collect();
         let typ = TypeInner::Struct(Struct { fields }).no_meta();
         let type_path = TypePath::from(path.clone().push("path"));
         let exists = type_index
@@ -300,7 +338,11 @@ fn walk_operation(
     } else {
         // construct a query param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<Ident> = query_params.keys().cloned().collect();
+        let fields: Vec<(Ident, IsRequired)> = query_params
+            .keys()
+            .cloned()
+            .map(|v| (v, IsRequired::Yes))
+            .collect();
         let typ = TypeInner::Struct(Struct { fields }).no_meta();
         let type_path = TypePath::from(path.clone().push("query"));
         let exists = type_index
@@ -575,17 +617,37 @@ fn generate_rust_type(
                         type #name = Vec<#inner_path>;
                     }
                 }
-                T::Option(_inner) => todo!(),
+                T::Option(_inner) => {
+                    let path = ApiPath::from(type_path.clone());
+                    let inner_path = TypePath::from(path.push("option"));
+                    assert!(lookup.contains_key(&inner_path));
+                    let inner_path = inner_path.canonicalize();
+                    quote! {
+                        #descr
+                        type #name = Option<#inner_path>;
+                    }
+                }
                 T::Struct(strukt) => {
-                    let fieldnames = &strukt.fields;
-                    let fields: Vec<TypeName> = strukt
+                    let fieldnames: Vec<_> = strukt.fields.iter().map(|(field, _)| field).collect();
+                    let fields: Vec<TokenStream> = strukt
                         .fields
                         .iter()
-                        .map(|field| {
+                        .map(|(field, required)| {
+                            // we have to look up the field type to see if it
+                            // is nullable, and if so, make it into an option
                             let path = ApiPath::from(type_path.clone());
-                            TypePath::from(path.push(field.deref())).canonicalize()
+                            let field_type_path = TypePath::from(path.push(field.deref()));
+                            let field_type_name = field_type_path.canonicalize();
+                            let ref_or = lookup.get(&field_type_path).unwrap(); // this lookup should not fail
+                            let field_type = lookup_type_recursive(ref_or, lookup)?; // this one can
+                            let def = if field_type.meta.nullable || *required == IsRequired::No {
+                                quote! {Option<#field_type_name>}
+                            } else {
+                                quote! {#field_type_name}
+                            };
+                            Ok(def)
                         })
-                        .collect();
+                        .collect::<Result<_>>()?;
                     let derives = get_derive_tokens();
                     quote! {
                         #descr
@@ -643,26 +705,13 @@ pub(crate) fn generate_enum_def(
 }
 
 fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Struct> {
-    fn deref<'a>(item: &'a ReferenceOr<Type>, lookup: &'a TypeLookup) -> Result<&'a Type> {
-        match item {
-            ReferenceOr::Reference { reference } => {
-                let path = TypePath::from_reference(reference)?.into();
-                lookup
-                    .get(&path)
-                    .ok_or_else(|| Error::BadReference(reference.clone()))
-                    .and_then(|refr| deref(refr, lookup))
-            }
-            ReferenceOr::Item(typ) => Ok(typ),
-        }
-    }
-
-    let mut base = Set::new();
+    let mut base = Map::new();
     for part in parts.iter() {
-        let typ = deref(part, lookup)?;
+        let typ = lookup_type_recursive(part, lookup)?;
         match &typ.typ {
             TypeInner::Struct(strukt) => {
-                for field in &strukt.fields {
-                    if !base.insert(field) {
+                for (field, required) in &strukt.fields {
+                    if let Some(_) = base.insert(field, required) {
                         // duplicate field
                         invalid!("Duplicate field '{}'", field);
                     }
@@ -672,7 +721,7 @@ fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Str
         }
     }
     Ok(Struct {
-        fields: base.into_iter().cloned().collect(),
+        fields: base.into_iter().map(|(n, r)| (n.clone(), *r)).collect(),
     })
 }
 

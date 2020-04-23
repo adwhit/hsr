@@ -5,8 +5,7 @@ pub mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
 
-pub use api::{client, server, NewPet, Pet, Pets, PetstoreApi};
-use api::{CreatePetError, DeletePetError, Error, GetAllPetsError, GetPetError};
+pub use api::{client, server, Error, NewPet, Pet, PetstoreApi};
 
 impl Pet {
     fn new(id: i64, name: String, tag: Option<String>) -> Pet {
@@ -22,14 +21,6 @@ pub enum InternalError {
     ServerHasExploded,
 }
 
-// Boilerplate impls necessary to fulfil API contract
-impl hsr::HasStatusCode for InternalError {}
-
-// TODO is it possible to remove the requirement for this impl?
-// Alternatively, add a trait bound for HasStatusCode to give a
-// nicer error?
-impl hsr::HasStatusCode for Error {}
-
 type ApiResult<T> = std::result::Result<T, InternalError>;
 
 // We define an object against which to implement our API trait
@@ -37,8 +28,14 @@ pub struct Api {
     database: lock::Mutex<Vec<Pet>>,
 }
 
-// We simulate some kind of database interactions
+// // We simulate some kind of database interactions
 impl Api {
+    pub fn new() -> Self {
+        Api {
+            database: lock::Mutex::new(vec![]),
+        }
+    }
+
     async fn connect_db(&self) -> ApiResult<lock::MutexGuard<'_, Vec<Pet>>> {
         if rand::random::<f32>() > 0.95 {
             Err(InternalError::BadConnection)
@@ -92,53 +89,42 @@ impl Api {
 // not compile).
 #[hsr::async_trait::async_trait(?Send)]
 impl PetstoreApi for Api {
-    type Error = InternalError;
-
-    fn new(_uri: hsr::url::Url) -> Self {
-        Api {
-            database: lock::Mutex::new(vec![]),
-        }
-    }
-
     // TODO all these i64s should be u64s
-    async fn get_all_pets(
-        &self,
-        limit: i64,
-        filter: Option<String>,
-    ) -> Result<Pets, GetAllPetsError<Self::Error>> {
-        let regex = if let Some(filter) = filter {
-            Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
-        } else {
-            Regex::new(".?").unwrap()
-        };
-        let pets = self.all_pets().await?;
-        Ok(pets
-            .into_iter()
-            .take(limit as usize)
-            .filter(|p| regex.is_match(&p.name))
-            .collect())
+    async fn get_all_pets(&self, limit: i64, filter: Option<String>) -> api::GetAllPets {
+        todo!()
+        // let regex = if let Some(filter) = filter {
+        //     Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
+        // } else {
+        //     Regex::new(".?").unwrap()
+        // };
+        // let pets = self.all_pets().await?;
+        // Ok(pets
+        //     .into_iter()
+        //     .take(limit as usize)
+        //     .filter(|p| regex.is_match(&p.name))
+        //     .collect())
     }
 
-    async fn create_pet(
-        &self,
-        new_pet: NewPet,
-    ) -> Result<hsr::Success, CreatePetError<Self::Error>> {
-        let () = self.server_health_check()?;
-        let _ = self.add_pet(new_pet).await?; // TODO return usize
-        Ok(hsr::Success)
+    async fn create_pet(&self, new_pet: NewPet) -> api::CreatePet {
+        todo!()
+        // let () = self.server_health_check()?;
+        // let _ = self.add_pet(new_pet).await?; // TODO return usize
+        // Ok(hsr::Success)
     }
 
-    async fn get_pet(&self, pet_id: i64) -> Result<Pet, GetPetError<Self::Error>> {
+    async fn get_pet(&self, pet_id: i64) -> api::GetPet {
         // TODO This is how we would like it to work
-        self.lookup_pet(pet_id as usize)
-            .await?
-            .ok_or_else(|| GetPetError::NotFound)
+        // self.lookup_pet(pet_id as usize)
+        //     .await?
+        //     .ok_or_else(|| GetPetError::NotFound)
+        todo!()
     }
 
-    async fn delete_pet(&self, pet_id: i64) -> Result<hsr::Success, DeletePetError<Self::Error>> {
-        self.remove_pet(pet_id as usize)
-            .await?
-            .map(|_| hsr::Success)
-            .ok_or_else(|| DeletePetError::NotFound)
+    async fn delete_pet(&self, pet_id: i64) -> api::DeletePet {
+        todo!()
+        // self.remove_pet(pet_id as usize)
+        //     .await?
+        //     .map(|_| hsr::Success)
+        //     .ok_or_else(|| DeletePetError::NotFound)
     }
 }

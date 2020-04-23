@@ -11,16 +11,19 @@ impl TestApi for Api {
     async fn two_path_params(&self, name: String, age: i64) -> api::TwoPathParams {
         api::TwoPathParams::Ok(api::Hello {
             myName: name,
-            my_age: age,
+            my_age: Some(age),
         })
     }
 
-    async fn two_query_params(&self, myName: String, my_age: i64) -> api::TwoQueryParams {
+    async fn two_query_params(&self, myName: String, my_age: Option<i64>) -> api::TwoQueryParams {
         api::TwoQueryParams::Ok(api::Hello { myName, my_age })
     }
 
     async fn just_default(&self) -> api::JustDefault {
-        api::JustDefault::Default { status_code: 200, body: hello() }
+        api::JustDefault::Default {
+            status_code: 200,
+            body: hello(),
+        }
     }
 
     async fn ok_error_default(&self, return_code: i64) -> api::OkErrorDefault {
@@ -46,7 +49,7 @@ impl TestApi for Api {
 fn hello() -> api::Hello {
     api::Hello {
         myName: "Alex".into(),
-        my_age: 333
+        my_age: Some(33),
     }
 }
 
@@ -74,30 +77,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.status().await?;
 
     {
-        let echo = client.two_path_params("Uncle Al".to_string(), 33).await?;
-        assert_eq!(
-            echo,
-            api::TwoPathParams::Ok(api::Hello {
-                myName: "Uncle Al".into(),
-                my_age: 33
-            })
-        );
+        let echo = client.two_path_params("Alex".to_string(), 33).await?;
+        assert_eq!(echo, api::TwoPathParams::Ok(hello()));
     }
 
     {
-        let echo = client.two_query_params("Uncle Al".to_string(), 33).await?;
-        assert_eq!(
-            echo,
-            api::TwoQueryParams::Ok(api::Hello {
-                myName: "Uncle Al".into(),
-                my_age: 33
-            })
-        );
+        let echo = client.two_query_params("Alex".to_string(), 33).await?;
+        assert_eq!(echo, api::TwoQueryParams::Ok(hello()));
     }
 
     {
         let rtn = client.just_default().await?;
-        assert_eq!(rtn, api::JustDefault::Default { status_code: 200, body: hello() })
+        assert_eq!(
+            rtn,
+            api::JustDefault::Default {
+                status_code: 200,
+                body: hello()
+            }
+        )
     }
 
     {

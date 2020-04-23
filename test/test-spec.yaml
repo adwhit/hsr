@@ -103,9 +103,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - first
                 properties:
                   first:
                     type: object
+                    required:
+                      - second
                     properties:
                       second:
                         type: object
@@ -119,6 +123,8 @@ components:
         - my_age
       properties:
         myName:
+          nullable: false
           type: string
         my_age:
+          nullable: true
           type: integer

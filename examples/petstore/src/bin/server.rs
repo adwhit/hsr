@@ -8,5 +8,5 @@ use petstore::{server, Api};
 async fn main() -> std::io::Result<()> {
     env_logger::init();
     let uri = "http://127.0.0.1:8000".parse().unwrap();
-    server::serve::<Api>(hsr::Config::with_host(uri)).await
+    server::serve::<Api>(Api::new(), hsr::Config::with_host(uri)).await
 }
