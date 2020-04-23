@@ -19,7 +19,7 @@ pub(crate) struct Route {
     operation_id: Ident,
     method: Method,
     path: RoutePath,
-    path_args: Map<Ident, TypePath>,
+    path_params: Option<(TypePath, Map<Ident, TypePath>)>,
     query_params: Option<(TypePath, Map<Ident, TypePath>)>,
     return_types: Map<StatusCode, Option<TypePath>>,
     default_return_type: DefaultResponse,
@@ -125,12 +125,19 @@ impl Route {
     pub(crate) fn generate_api_signature(&self) -> TokenStream {
         let opid = &self.operation_id;
         let api_return_ty = self.return_ty_name();
+
         let paths: Vec<_> = self
-            .path_args
-            .iter()
-            .map(|(id, ty)| (id, ty.canonicalize()))
-            .map(|(id, ty)| quote! { #id: #ty })
-            .collect();
+            .path_params
+            .as_ref()
+            .map(|(_, params)| {
+                params
+                    .iter()
+                    .map(|(id, ty)| (id, ty.canonicalize()))
+                    .map(|(id, ty)| quote! { #id: #ty })
+                    .collect()
+            })
+            .unwrap_or(Vec::new());
+
         let queries: Vec<_> = self
             .query_params
             .as_ref()
@@ -142,6 +149,7 @@ impl Route {
                     .collect()
             })
             .unwrap_or(Vec::new());
+
         let body_arg_opt = self.method.body_type().map(|body_ty| {
             let body_ty = body_ty.canonicalize();
             let name = ident("payload");
@@ -163,11 +171,16 @@ impl Route {
         let opid = &self.operation_id;
         let result_type = self.return_ty_name();
 
-        let (path_names, path_types): (Vec<_>, Vec<_>) = self
-            .path_args
-            .iter()
-            .map(|(id, ty)| (id, ty.canonicalize()))
-            .unzip();
+        let (path_names, path_types) = self
+            .path_params
+            .as_ref()
+            .map(|(_, params)| {
+                params
+                    .iter()
+                    .map(|(id, ty)| (id, ty.canonicalize()))
+                    .unzip()
+            })
+            .unwrap_or((Vec::new(), Vec::new()));
 
         let (query_names, query_types) = self
             .query_params
@@ -286,14 +299,25 @@ impl Route {
         // After all, it seems we have got the API signatures right/OK?
         let opid = &self.operation_id;
 
-        let (path_names, path_tys): (Vec<_>, Vec<_>) = self
-            .path_args
-            .iter()
-            .map(|(name, path)| (name, path.canonicalize()))
-            .unzip();
-        let path_names = &path_names;
-        // TODO we should do this in one tuple, not multiple paths
-        let path_func_args = quote! {#(#path_names: AxPath<#path_tys>,)*};
+        // path args handling
+        let path_param_fields = &self
+            .path_params
+            .as_ref()
+            .map(|(_, params)| params.keys().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let (path_arg_opt, path_destructure_opt) = {
+            self.path_params.as_ref().map(|(name, _params)| {
+                let name = name.canonicalize();
+                let path_destructure = quote! {
+                    let #name { #(#path_param_fields),* } = path.into_inner();
+                };
+                let path_arg = quote! {
+                    path: AxPath<#name>
+                };
+                (Some(path_arg), Some(path_destructure))
+            })
+        }
+        .unwrap_or((None, None));
 
         // query args handling
         let query_param_fields = &self
@@ -332,16 +356,17 @@ impl Route {
         let code = quote! {
             async fn #opid<A: #trait_name + Send + Sync>(
                 data: AxData<A>,
-                #path_func_args
+                #path_arg_opt
                 #query_arg_opt
                 #body_arg_opt
             ) -> #return_ty {
 
-                // destructure query parameter into variables, if any
+                // destructure path and query parameters into variables, if any
+                #path_destructure_opt
                 #query_destructure_opt
                 // call our API handler function with requisite arguments
                 data.#opid(
-                    #(#path_names.into_inner(),)*
+                    #(#path_param_fields,)*
                     #(#query_param_fields,)*
                     #body_ident_opt
                 ).await

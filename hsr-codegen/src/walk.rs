@@ -230,7 +230,7 @@ fn walk_operation(
         None => Err(Error::NoOperationId(path.to_string())),
     }?;
 
-    let mut path_args = Map::new();
+    let mut path_params = Map::new();
     let mut query_params = Map::new();
 
     for param in &op.parameters {
@@ -243,7 +243,7 @@ fn walk_operation(
                 ParameterSchemaOrContent::Schema(schema) => {
                     let path = path.clone().push("path").push(&parameter_data.name);
                     let name: Ident = parameter_data.name.parse()?;
-                    path_args.insert(name, TypePath::from(path.clone()));
+                    path_params.insert(name, TypePath::from(path.clone()));
                     let typ = build_type_recursive(&schema, path.clone(), type_index)?;
                     assert!(type_index.insert(TypePath::from(path), typ).is_none());
                 }
@@ -264,9 +264,24 @@ fn walk_operation(
         };
     }
 
-    if route_path.path_args().count() > path_args.len() {
+    if route_path.path_args().count() > path_params.len() {
         todo!("Not enough path args specified!")
     }
+
+    let path_params = if path_params.is_empty() {
+        None
+    } else {
+        // construct a path param type, if any
+        // This will be used as an Extractor in actix-web
+        let fields: Vec<Ident> = path_params.keys().cloned().collect();
+        let typ = TypeInner::Struct(Struct { fields }).no_meta();
+        let type_path = TypePath::from(path.clone().push("path"));
+        let exists = type_index
+            .insert(type_path.clone(), ReferenceOr::Item(typ))
+            .is_some();
+        assert!(!exists);
+        Some((type_path, path_params))
+    };
 
     let query_params = if query_params.is_empty() {
         None
@@ -305,7 +320,7 @@ fn walk_operation(
         operation_id,
         method,
         route_path.clone(),
-        path_args,
+        path_params,
         query_params,
         return_types,
         default_return_type,

@@ -46,14 +46,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(name, api::OneParam::Ok("Alex".into()));
 
     println!("/echo/{{name}}/{{age}}");
-    let echo = client
-        .echo_name_and_age("Uncle Alex".to_string(), 33)
-        .await?;
+    let echo = client.echo_name_and_age("Uncle Al".to_string(), 33).await?;
 
     assert_eq!(
         echo,
         api::EchoNameAndAge::Ok(api::Hello {
-            name: "UncleAlex".into(),
+            name: "Uncle Al".into(),
             age: 33
         })
     );
