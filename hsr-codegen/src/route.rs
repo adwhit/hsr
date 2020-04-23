@@ -414,7 +414,7 @@ pub(crate) fn validate_routes(routes: &Map<String, Vec<Route>>) -> Result<()> {
         .collect();
     let dupes = operation_id_cts.find_duplicates();
     if !dupes.is_empty() {
-        Err(invalid!("Duplicate operationId: {:?}", dupes))
+        invalid!("Duplicate operationId: {:?}", dupes)
     } else {
         Ok(())
     }

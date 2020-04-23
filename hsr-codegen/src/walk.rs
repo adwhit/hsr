@@ -225,15 +225,19 @@ fn walk_operation(
     type_index: &mut TypeLookup,
     components: &Components,
 ) -> Result<Route> {
+    // TODO: Send in params from path-level
+
     use Parameter::*;
 
     let operation_id = match op.operation_id {
         Some(ref op) => op.parse(),
-        None => Err(invalid!("Missing operationId for '{}'", route_path)),
+        None => invalid!("Missing operationId for '{}'", route_path),
     }?;
 
     let mut path_params = Map::new();
     let mut query_params = Map::new();
+
+    let mut expected_route_params: Set<&str> = route_path.path_args().collect();
 
     for param in &op.parameters {
         // for each parameter we gather the type
@@ -243,6 +247,9 @@ fn walk_operation(
         match param {
             Path { parameter_data, .. } => match &parameter_data.format {
                 ParameterSchemaOrContent::Schema(schema) => {
+                    if !expected_route_params.remove(parameter_data.name.as_str()) {
+                        invalid!("path parameter '{}' not found in path", parameter_data.name)
+                    }
                     let path = path.clone().push("path").push(&parameter_data.name);
                     let name: Ident = parameter_data.name.parse()?;
                     path_params.insert(name, TypePath::from(path.clone()));
@@ -266,8 +273,11 @@ fn walk_operation(
         };
     }
 
-    if route_path.path_args().count() > path_params.len() {
-        todo!("Not enough path args specified!")
+    if !expected_route_params.is_empty() {
+        invalid!(
+            "Not enough path parameters specified (Missing: {:?})",
+            expected_route_params
+        )
     }
 
     let path_params = if path_params.is_empty() {
@@ -379,12 +389,9 @@ fn walk_responses(
         .iter()
         .map(|(code, resp)| {
             let code = match code {
-                ApiStatusCode::Code(v) => {
-                    StatusCode::from_u16(*v).map_err(|_| invalid!("Unknown status code '{}'", v))
-                }
-                ApiStatusCode::Range(v) => {
-                    Err(invalid!("Status code ranges not supported '{}'", v))
-                }
+                ApiStatusCode::Code(v) => StatusCode::from_u16(*v)
+                    .map_err(|_| Error::Validation(format!("Unknown status code '{}'", v))),
+                ApiStatusCode::Range(v) => invalid!("Status code ranges not supported '{}'", v),
             }?;
             let resp = dereference(resp, &components.responses)?;
             walk_response(resp, path.clone(), type_index).map(|pth| (code, pth))
@@ -643,7 +650,7 @@ fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Str
                 for field in &strukt.fields {
                     if !base.insert(field) {
                         // duplicate field
-                        return Err(invalid!("Duplicate field '{}'", field));
+                        invalid!("Duplicate field '{}'", field);
                     }
                 }
             }

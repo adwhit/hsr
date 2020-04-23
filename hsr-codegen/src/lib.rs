@@ -24,7 +24,7 @@ use thiserror::Error;
 
 macro_rules! invalid {
     ($($arg:tt)+) => (
-        Error::Validation(format!($($arg)+))
+        return Err(Error::Validation(format!($($arg)+)))
     );
 }
 
@@ -126,7 +126,7 @@ impl Method {
         match method {
             R::Get | R::Head | R::Options | R::Trace => {
                 if body_type.is_some() {
-                    return Err(invalid!("Method '{}' canoot have a body", method));
+                    invalid!("Method '{}' canoot have a body", method);
                 }
             }
             _ => {}
@@ -225,10 +225,7 @@ impl FromStr for Ident {
         if ident_re.is_match(val) {
             Ok(Ident(val.to_string()))
         } else {
-            Err(invalid!(
-                "Bad identifier '{}' (not a valid Rust identifier)",
-                val
-            ))
+            invalid!("Bad identifier '{}' (not a valid Rust identifier)", val)
         }
     }
 }
@@ -319,7 +316,7 @@ impl FromStr for TypeName {
         if val == camel {
             Ok(TypeName(camel))
         } else {
-            Err(invalid!("Bad type name '{}', must be ClassCase", val))
+            invalid!("Bad type name '{}', must be ClassCase", val)
         }
     }
 }
@@ -368,7 +365,7 @@ impl RoutePath {
         let param_re = Regex::new(r#"^\{([[:alpha:]]([[:alnum:]]|_)*)\}$"#).unwrap();
 
         if !path.starts_with('/') {
-            return Err(invalid!("Bad path '{}' (must start with '/')", path));
+            invalid!("Bad path '{}' (must start with '/')", path);
         }
 
         let mut segments = Vec::new();
@@ -380,11 +377,11 @@ impl RoutePath {
             } else if let Some(seg) = param_re.captures(segment) {
                 let param = seg.get(1).unwrap().as_str().to_string();
                 if !dupe_params.insert(param.clone()) {
-                    return Err(invalid!("Duplicate parameter in path '{}'", path));
+                    invalid!("Duplicate parameter in path '{}'", path);
                 }
                 segments.push(PathSegment::Parameter(param))
             } else {
-                return Err(invalid!("Bad path '{}'", path));
+                invalid!("Bad path '{}'", path);
             }
         }
         Ok(RoutePath { segments })
