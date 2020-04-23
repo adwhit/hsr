@@ -339,7 +339,7 @@ enum PathSegment {
     Parameter(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RoutePath {
     segments: Vec<PathSegment>,
 }
@@ -365,9 +365,9 @@ impl fmt::Display for RoutePath {
 impl RoutePath {
     /// Check a path is well-formed and break it into its respective `PathSegment`s
     fn analyse(path: &str) -> Result<RoutePath> {
-        // TODO lazy static
-        let literal_re = Regex::new("^[[:alnum:]]+$").unwrap();
-        let param_re = Regex::new(r#"^\{([[:alnum:]]+)\}$"#).unwrap();
+        // "An alpha optionally followed by any of (alpha, number or _)"
+        let literal_re = Regex::new("^[[:alpha:]]([[:alnum:]]|_)*$").unwrap();
+        let param_re = Regex::new(r#"^\{([[:alpha:]]([[:alnum:]]|_)*)\}$"#).unwrap();
 
         if path.is_empty() || !path.starts_with('/') {
             return Err(invalid!("Bad path '{}', must start with '/'", path));
@@ -375,29 +375,27 @@ impl RoutePath {
 
         let mut segments = Vec::new();
 
+        let mut dupe_params = Set::new();
         for segment in path.split('/').skip(1) {
-            // ignore trailing slashes
-            if segment.is_empty() {
-                continue;
-            }
             if literal_re.is_match(segment) {
                 segments.push(PathSegment::Literal(segment.to_string()))
             } else if let Some(seg) = param_re.captures(segment) {
-                segments.push(PathSegment::Parameter(
-                    seg.get(1).unwrap().as_str().to_string(),
-                ))
+                let param = seg.get(1).unwrap().as_str().to_string();
+                if !dupe_params.insert(param.clone()) {
+                    return Err(invalid!("Duplicate parameter in path '{}'", path));
+                }
+                segments.push(PathSegment::Parameter(param))
             } else {
                 return Err(invalid!("Bad path '{}'", path));
             }
         }
-        // TODO check for duplicate parameter names
         Ok(RoutePath { segments })
     }
 
     fn path_args(&self) -> impl Iterator<Item = &str> {
         self.segments.iter().filter_map(|s| {
-            if let PathSegment::Parameter(ref s) = s {
-                Some(s.as_str())
+            if let PathSegment::Parameter(ref p) = s {
+                Some(p.as_ref())
             } else {
                 None
             }
@@ -712,36 +710,41 @@ mod tests {
 
         // Should fail
         assert!(RoutePath::analyse("").is_err());
-        assert!(RoutePath::analyse("a/b").is_err());
-        assert!(RoutePath::analyse("/a/b/c/").is_ok());
+        assert!(RoutePath::analyse("a").is_err());
+        assert!(RoutePath::analyse("/a/").is_err());
+        assert!(RoutePath::analyse("/a/b/c/").is_err());
         assert!(RoutePath::analyse("/a{").is_err());
         assert!(RoutePath::analyse("/a{}").is_err());
         assert!(RoutePath::analyse("/{}a").is_err());
         assert!(RoutePath::analyse("/{a}a").is_err());
         assert!(RoutePath::analyse("/ a").is_err());
+        assert!(RoutePath::analyse("/1").is_err());
+        assert!(RoutePath::analyse("/a//b").is_err());
 
-        // // TODO probably should succeed
-        assert!(RoutePath::analyse("/a1").is_ok());
-        // assert!(RoutePath::analyse("/{a1}").is_err());
+        assert!(RoutePath::analyse("/a").is_ok());
+        assert!(RoutePath::analyse("/a/b/c").is_ok());
+        assert!(RoutePath::analyse("/a/a/a").is_ok());
+        assert!(RoutePath::analyse("/a1/b2/c3").is_ok());
 
-        // // Should succeed
-        // assert_eq!(
-        //     RoutePath::analyse("/a/b").unwrap(),
-        //     vec![Literal("a".into()), Literal("b".into()),]
-        // );
-        // assert_eq!(
-        //     RoutePath::analyse("/{test}").unwrap(),
-        //     vec![Parameter("test".into())]
-        // );
-        // assert_eq!(
-        //     RoutePath::analyse("/{a}/{b}/a/b").unwrap(),
-        //     vec![
-        //         Parameter("a".into()),
-        //         Parameter("b".into()),
-        //         Literal("a".into()),
-        //         Literal("b".into())
-        //     ]
-        // );
+        assert!(RoutePath::analyse("/{a1}").is_ok());
+        assert!(RoutePath::analyse("/{a1}/b2/{c3}").is_ok());
+        assert!(RoutePath::analyse("/{a1B2c3}").is_ok());
+        assert!(RoutePath::analyse("/{a1_b2_c3}").is_ok());
+
+        // duplicate param
+        assert!(RoutePath::analyse("/{a}/{b}/{a}").is_err());
+
+        assert_eq!(
+            RoutePath::analyse("/{a_1}/{b2C3}/a/b").unwrap(),
+            RoutePath {
+                segments: vec![
+                    Parameter("a_1".into()),
+                    Parameter("b2C3".into()),
+                    Literal("a".into()),
+                    Literal("b".into())
+                ]
+            }
+        );
     }
 
     // #[test]

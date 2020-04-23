@@ -15,6 +15,14 @@ impl TestApi for Api {
     async fn two_query_params(&self, name: String, age: i64) -> api::TwoQueryParams {
         api::TwoQueryParams::Ok(api::Hello { name, age })
     }
+
+    async fn nested_response(&self) -> api::NestedResponse {
+        api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
+            first: api::PathsNestedResponseTypeGetResponsesFirst {
+                second: api::PathsNestedResponseTypeGetResponsesFirstSecond {},
+            },
+        })
+    }
 }
 
 // TODO make this into a 'normal' rust test suite not just a big main function
@@ -42,7 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let echo = client.two_path_params("Uncle Al".to_string(), 33).await?;
-
         assert_eq!(
             echo,
             api::TwoPathParams::Ok(api::Hello {

@@ -14,18 +14,18 @@ paths:
         '200':
           description: "Ok"
 
-  /twoPathParams/{name}/{age}:
+  /twoPathParams/{my_name}/{myAge}:
     get:
       summary: echo name and age
       operationId: twoPathParams
       parameters:
-        - name: name
+        - name: my_name
           in: path
           required: true
           description: User name
           schema:
             type: string
-        - name: age
+        - name: myAge
           in: path
           required: true
           description: User age
@@ -44,15 +44,15 @@ paths:
       summary: echo name and age
       operationId: twoQueryParams
       parameters:
-        - name: name
+        - name: myName
           in: query
           required: true
           description: User name
           schema:
             type: string
-        - name: age
+        - name: my_age
           in: query
-          required: true
+          required: false
           description: User age
           schema:
             type: integer
@@ -63,6 +63,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Hello"
+
+  /nestedResponseType:
+    get:
+      operationId: nestedResponse
+      responses:
+        '200':
+          description: "Ok"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  first:
+                    type: object
+                    properties:
+                      second:
+                        type: object
+
 
 components:
   schemas:

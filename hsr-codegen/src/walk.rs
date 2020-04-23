@@ -15,9 +15,10 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, get_derive_tokens, route::{Route, validate_routes}, unwrap_ref, variant_from_status_code, ApiPath,
-    Error, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath,
-    SchemaLookup, StatusCode, TypeName, TypePath,
+    dereference, get_derive_tokens,
+    route::{validate_routes, Route},
+    unwrap_ref, variant_from_status_code, ApiPath, Error, Ident, Method, MethodWithBody,
+    MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode, TypeName, TypePath,
 };
 use proc_macro2::Ident as QIdent;
 
@@ -313,8 +314,12 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let (return_types, default_return_type) =
-        walk_responses(&op.responses, path.push("reponses"), type_index, components)?;
+    let (return_types, default_return_type) = walk_responses(
+        &op.responses,
+        path.push("responses"),
+        type_index,
+        components,
+    )?;
 
     let route = Route::new(
         op.summary.clone(),

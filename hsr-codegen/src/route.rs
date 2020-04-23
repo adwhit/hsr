@@ -397,8 +397,7 @@ impl<A: PartialEq + Eq + Hash> std::iter::FromIterator<A> for Counter<A> {
 
 impl<A: PartialEq + Eq + Hash + std::fmt::Debug> Counter<A> {
     fn find_duplicates(&self) -> Vec<&A> {
-        self
-            .0
+        self.0
             .iter()
             .filter_map(|(val, &ct)| if ct > 1 { Some(val) } else { None })
             .collect()
