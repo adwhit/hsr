@@ -64,6 +64,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/Hello"
 
+  /justDefault:
+    get:
+      operationId: just_default
+      responses:
+        default:
+          description: "Default"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
   /okErrorDefault:
     get:
       parameters:

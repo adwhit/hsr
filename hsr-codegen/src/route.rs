@@ -194,6 +194,7 @@ impl Route {
         let opid = &self.operation_id;
         let result_type = self.return_ty_name();
 
+        // build useful path and query iterators
         let (path_names, path_types) = self
             .path_params
             .as_ref()
@@ -216,6 +217,7 @@ impl Route {
             })
             .unwrap_or((Vec::new(), Vec::new()));
 
+        // template the code to add query parameters to the url, if necessary
         let add_query_string_to_url = self.query_params.as_ref().map(|(type_path, params)| {
             let type_name = type_path.canonicalize();
             let fields = params.iter().map(|(id, _)| id);
@@ -232,6 +234,7 @@ impl Route {
             }
         });
 
+        // if there is a payload in the body, make sure to add it (as json)
         let (body_arg_opt, send_request) = match self.method.body_type() {
             None => (None, quote! {.send()}),
             Some(ref body_type_path) => {
@@ -242,40 +245,77 @@ impl Route {
                 )
             }
         };
+
         let method = ident(&self.method);
         let path_template = self.path.to_string();
-        let resp_match_arms: Vec<_> = self
-            .return_types
-            .iter()
-            .map(|(code, type_path)| {
-                let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
-                let variant = variant_from_status_code(code);
-                match type_path {
-                    Some(type_path) => {
-                        let type_name = type_path.canonicalize();
-                        quote! {
-                            #code_lit => {
-                                match resp
-                                    .json::<#type_name>()
-                                    .await {
-                                        Ok(body) => Result::Ok(#result_type::#variant(body)),
-                                        Err(e) => Result::Err(ClientError::Actix(e.into()))
-                                    }
+
+        // We will need to deserialize the response based on the status code
+        // Build up the match arms that will do so
+        let resp_match_arms = {
+            let mut resp_match_arms: Vec<_> = self
+                .return_types
+                .iter()
+                .map(|(code, type_path)| {
+                    let status_code_literal = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
+                    let variant = variant_from_status_code(code);
+                    match type_path {
+                        Some(type_path) => {
+                            // there is a payload associated with the response type
+                            // so attempt to deserialize it
+                            let type_name = type_path.canonicalize();
+                            quote! {
+                                #status_code_literal => {
+                                    match resp
+                                        .json::<#type_name>()
+                                        .await {
+                                            Ok(body) => Result::Ok(#result_type::#variant(body)),
+                                            Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                        }
+                                }
+                            }
+                        }
+                        None => {
+                            // There is no payload with this response, just return the bare variant
+                            // TODO: Check the payload is empty?
+                            quote! {
+                                #status_code_literal => {
+                                    // could check body is empty here?
+                                    Result::Ok(#result_type::#variant)
+                                }
                             }
                         }
                     }
-                    None => {
-                        quote! {
-                            #code_lit => {
-                                // could check body is empty here?
-                                Result::Ok(#result_type::#variant)
-                            }
+                })
+                .collect();
+
+            // we have done the 'expected' matches. Now, what if we get an unknown status code?
+            // Depends on whether we have a 'default' response
+            let fallthough_match = match &self.default_return_type {
+                DefaultResponse::None => quote! {
+                    _ => Result::Err(ClientError::BadStatus(resp.status()))
+                },
+                DefaultResponse::Anonymous => quote! {
+                    status_code => Result::Ok(#result_type::Default { status_code })
+                },
+                DefaultResponse::Typed(type_path) => {
+                    let type_name = type_path.canonicalize();
+                    quote! {
+                        status_code => {
+                            match resp
+                                .json::<#type_name>()
+                                .await {
+                                    Ok(body) => Result::Ok(#result_type::Default { status_code, body }),
+                                    Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                }
                         }
                     }
                 }
-            })
-            .collect();
+            };
+            resp_match_arms.push(fallthough_match);
+            resp_match_arms
+        };
 
+        // Finally we can piece everything together
         quote! {
             #[allow(unused_mut)]
             pub async fn #opid(
@@ -298,10 +338,6 @@ impl Route {
                 // We match on the status type to handle the return correctly
                 match resp.status().as_u16() {
                     #(#resp_match_arms)*
-                    _ => {
-                        // default match arm
-                        Err(ClientError::BadStatus(resp.status()))
-                     }
                 }
             }
         }

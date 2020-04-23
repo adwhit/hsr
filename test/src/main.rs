@@ -19,6 +19,10 @@ impl TestApi for Api {
         api::TwoQueryParams::Ok(api::Hello { myName, my_age })
     }
 
+    async fn just_default(&self) -> api::JustDefault {
+        api::JustDefault::Default { status_code: 200, body: hello() }
+    }
+
     async fn ok_error_default(&self, return_code: i64) -> api::OkErrorDefault {
         match return_code {
             200 => api::OkErrorDefault::Ok,
@@ -35,6 +39,14 @@ impl TestApi for Api {
                 second: api::PathsNestedResponseTypeGetResponsesFirstSecond {},
             },
         })
+    }
+}
+
+// Quickly generate some data
+fn hello() -> api::Hello {
+    api::Hello {
+        myName: "Alex".into(),
+        my_age: 333
     }
 }
 
@@ -81,6 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 my_age: 33
             })
         );
+    }
+
+    {
+        let rtn = client.just_default().await?;
+        assert_eq!(rtn, api::JustDefault::Default { status_code: 200, body: hello() })
     }
 
     {
