@@ -4,7 +4,9 @@ use openapiv3::{ReferenceOr, StatusCode as ApiStatusCode};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::hash::Hash;
 use std::ops::Deref;
 
 use crate::walk::{generate_enum_def, DefaultResponse, Type};
@@ -373,5 +375,48 @@ impl Route {
             }
         };
         code
+    }
+}
+
+#[derive(Debug, Clone, derive_more::Constructor, derive_more::Deref)]
+struct Counter<A: PartialEq + Eq + Hash>(HashMap<A, usize>);
+
+impl<A: PartialEq + Eq + Hash> std::iter::FromIterator<A> for Counter<A> {
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = A>,
+    {
+        let mut counter = Counter(HashMap::new());
+        for item in iter {
+            let ct = counter.0.entry(item).or_insert(0);
+            *ct += 1
+        }
+        counter
+    }
+}
+
+impl<A: PartialEq + Eq + Hash + std::fmt::Debug> Counter<A> {
+    fn find_duplicates(&self) -> Vec<&A> {
+        self
+            .0
+            .iter()
+            .filter_map(|(val, &ct)| if ct > 1 { Some(val) } else { None })
+            .collect()
+    }
+}
+
+/// Validations which require checking across all routes
+pub(crate) fn validate_routes(routes: &Map<String, Vec<Route>>) -> Result<()> {
+    let operation_id_cts: Counter<_> = routes
+        .iter()
+        .map(|(_, routes)| routes.iter())
+        .flatten()
+        .map(|route| route.operation_id())
+        .collect();
+    let dupes = operation_id_cts.find_duplicates();
+    if !dupes.is_empty() {
+        Err(invalid!("Duplicate operationId: {:?}", dupes))
+    } else {
+        Ok(())
     }
 }

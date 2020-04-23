@@ -15,7 +15,7 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, get_derive_tokens, route::Route, unwrap_ref, variant_from_status_code, ApiPath,
+    dereference, get_derive_tokens, route::{Route, validate_routes}, unwrap_ref, variant_from_status_code, ApiPath,
     Error, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath,
     SchemaLookup, StatusCode, TypeName, TypePath,
 };
@@ -137,6 +137,7 @@ pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Rou
     let components = api.components.as_ref().unwrap_or(&dummy);
     walk_component_schemas(&components.schemas, &mut type_index)?;
     let routes = walk_paths(&api.paths, &mut type_index, &components)?;
+    validate_routes(&routes)?;
     Ok((type_index, routes))
 }
 
@@ -227,7 +228,7 @@ fn walk_operation(
 
     let operation_id = match op.operation_id {
         Some(ref op) => op.parse(),
-        None => Err(Error::NoOperationId(path.to_string())),
+        None => Err(invalid!("Missing operationId for '{}'", route_path)),
     }?;
 
     let mut path_params = Map::new();
@@ -374,9 +375,11 @@ fn walk_responses(
         .map(|(code, resp)| {
             let code = match code {
                 ApiStatusCode::Code(v) => {
-                    StatusCode::from_u16(*v).map_err(|_| Error::BadStatusCode(code.clone()))
+                    StatusCode::from_u16(*v).map_err(|_| invalid!("Unknown status code '{}'", v))
                 }
-                _ => return Err(Error::BadStatusCode(code.clone())),
+                ApiStatusCode::Range(v) => {
+                    Err(invalid!("Status code ranges not supported '{}'", v))
+                }
             }?;
             let resp = dereference(resp, &components.responses)?;
             walk_response(resp, path.clone(), type_index).map(|pth| (code, pth))
@@ -463,7 +466,8 @@ fn build_type_recursive(
             ));
         }
         // TODO OneOf
-        _ => return Err(Error::UnsupportedKind(schema.schema_kind.clone())),
+        SchemaKind::AnyOf { any_of } => todo!("anyof"),
+        SchemaKind::OneOf { one_of } => todo!("oneof"),
     };
     let typ = match ty {
         // TODO make enums from string
@@ -634,7 +638,7 @@ fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Str
                 for field in &strukt.fields {
                     if !base.insert(field) {
                         // duplicate field
-                        return Err(Error::DuplicateName(field.to_string()));
+                        return Err(invalid!("Duplicate field '{}'", field));
                     }
                 }
             }

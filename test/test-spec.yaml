@@ -14,44 +14,10 @@ paths:
         '200':
           description: "Ok"
 
-  /oneParam/{first}:
-    get:
-      operationId: one_param
-      parameters:
-        - name: first
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Ok
-          content:
-            application/json:
-              schema:
-                type: string
-
-  /oneParam/{first}:
-    get:
-      operationId: one_param
-      parameters:
-        - name: first
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Ok
-          content:
-            application/json:
-              schema:
-                type: string
-
-  /echo/{name}/{age}:
+  /twoPathParams/{name}/{age}:
     get:
       summary: echo name and age
-      operationId: echoNameAndAge
+      operationId: twoPathParams
       parameters:
         - name: name
           in: path
@@ -61,6 +27,31 @@ paths:
             type: string
         - name: age
           in: path
+          required: true
+          description: User age
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Hello
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
+  /twoQueryParams:
+    get:
+      summary: echo name and age
+      operationId: twoQueryParams
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: User name
+          schema:
+            type: string
+        - name: age
+          in: query
           required: true
           description: User age
           schema:

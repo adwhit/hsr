@@ -22,6 +22,12 @@ use quote::quote;
 use regex::Regex;
 use thiserror::Error;
 
+macro_rules! invalid {
+    ($($arg:tt)+) => (
+        Error::Validation(format!($($arg)+))
+    );
+}
+
 mod route;
 mod walk;
 
@@ -41,49 +47,22 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Yaml Error: {}", _0)]
     Yaml(#[from] serde_yaml::Error),
-    #[error("Codegen failed")]
-    CodeGen,
-    #[error("Bad reference: \"{}\"", _0)]
+    #[error("Codegen failed: {}", _0)]
+    BadCodegen(String),
+    #[error("Bad reference: {}", _0)]
     BadReference(String),
-    #[error("Invalid schema: \"{}\"", _0)]
-    BadSchema(String),
-    #[error("Unexpected reference: \"{}\"", _0)]
-    UnexpectedReference(String),
-    #[error("Schema not supported: {:?}", _0)]
-    UnsupportedKind(SchemaKind),
-    #[error("Definition is too complex: {:?}", _0)]
-    TooComplex(Schema),
-    #[error("Empty struct")]
-    EmptyStruct,
-    #[error("Rust does not support structural typing")]
-    NotStructurallyTyped,
-    #[error("Path is malformed: {}", _0)]
-    MalformedPath(String),
-    #[error("No operation id given for route {}", _0)]
-    NoOperationId(String),
-    #[error("TODO: {}", _0)]
-    Todo(String),
-    #[error("{} is not a valid identifier", _0)]
-    BadIdentifier(String),
-    #[error("{} is not a valid type name", _0)]
-    BadTypeName(String),
-    #[error("Malformed codegen")]
-    BadCodegen,
-    #[error("status code '{}' not supported", _0)]
-    BadStatusCode(ApiStatusCode),
-    #[error("Duplicate name: {}", _0)]
-    DuplicateName(String),
+    #[error("OpenAPI validation failed: {}", _0)]
+    Validation(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Unwrap the reference, or fail
+/// TODO get rid of this
 fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
     match item {
         ReferenceOr::Item(item) => Ok(item),
-        ReferenceOr::Reference { reference } => {
-            Err(Error::UnexpectedReference(reference.to_string()))
-        }
+        ReferenceOr::Reference { reference } => Err(Error::BadReference(reference.to_string())),
     }
 }
 
@@ -147,7 +126,7 @@ impl Method {
         match method {
             R::Get | R::Head | R::Options | R::Trace => {
                 if body_type.is_some() {
-                    return Err(Error::Todo("eh".into()));
+                    return Err(invalid!("Method '{}' canoot have a body", method));
                 }
             }
             _ => {}
@@ -248,7 +227,10 @@ impl FromStr for Ident {
         if val == snake || val == mixed {
             Ok(Ident(snake))
         } else {
-            Err(Error::BadIdentifier(val.to_string()))
+            Err(invalid!(
+                "Bad identifier '{}', must be snake_case or camelCase",
+                val
+            ))
         }
     }
 }
@@ -339,7 +321,7 @@ impl FromStr for TypeName {
         if val == camel {
             Ok(TypeName(camel))
         } else {
-            Err(Error::BadTypeName(val.to_string()))
+            Err(invalid!("Bad type name '{}', must be ClassCase", val))
         }
     }
 }
@@ -388,7 +370,7 @@ impl RoutePath {
         let param_re = Regex::new(r#"^\{([[:alnum:]]+)\}$"#).unwrap();
 
         if path.is_empty() || !path.starts_with('/') {
-            return Err(Error::MalformedPath(path.to_string()));
+            return Err(invalid!("Bad path '{}', must start with '/'", path));
         }
 
         let mut segments = Vec::new();
@@ -405,7 +387,7 @@ impl RoutePath {
                     seg.get(1).unwrap().as_str().to_string(),
                 ))
             } else {
-                return Err(Error::MalformedPath(path.to_string()));
+                return Err(invalid!("Bad path '{}'", path));
             }
         }
         // TODO check for duplicate parameter names
@@ -693,10 +675,10 @@ pub fn prettify_code(input: String) -> Result<String> {
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
         session
             .format(rustfmt_nightly::Input::Text(input))
-            .map_err(|_e| Error::BadCodegen)?;
+            .map_err(|e| Error::BadCodegen(e.to_string()))?;
     }
     if buf.is_empty() {
-        return Err(Error::BadCodegen);
+        return Err(Error::BadCodegen("empty buffer".to_string()));
     }
     let mut s = String::from_utf8(buf).unwrap();
     // TODO no idea why this is necessary but... it is

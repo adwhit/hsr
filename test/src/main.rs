@@ -8,12 +8,12 @@ impl TestApi for Api {
         api::Status::Ok
     }
 
-    async fn one_param(&self, name: String) -> api::OneParam {
-        api::OneParam::Ok(name)
+    async fn two_path_params(&self, name: String, age: i64) -> api::TwoPathParams {
+        api::TwoPathParams::Ok(api::Hello { name, age })
     }
 
-    async fn echo_name_and_age(&self, name: String, age: i64) -> api::EchoNameAndAge {
-        api::EchoNameAndAge::Ok(api::Hello { name, age })
+    async fn two_query_params(&self, name: String, age: i64) -> api::TwoQueryParams {
+        api::TwoQueryParams::Ok(api::Hello { name, age })
     }
 }
 
@@ -38,23 +38,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = client::Client::new(uri2);
     println!("Testing endpoints");
 
-    println!("/status");
     client.status().await?;
 
-    println!("/oneParam/{{name}}");
-    let name = client.one_param("Alex".into()).await?;
-    assert_eq!(name, api::OneParam::Ok("Alex".into()));
+    {
+        let echo = client.two_path_params("Uncle Al".to_string(), 33).await?;
 
-    println!("/echo/{{name}}/{{age}}");
-    let echo = client.echo_name_and_age("Uncle Al".to_string(), 33).await?;
+        assert_eq!(
+            echo,
+            api::TwoPathParams::Ok(api::Hello {
+                name: "Uncle Al".into(),
+                age: 33
+            })
+        );
+    }
 
-    assert_eq!(
-        echo,
-        api::EchoNameAndAge::Ok(api::Hello {
-            name: "Uncle Al".into(),
-            age: 33
-        })
-    );
+    {
+        let echo = client.two_query_params("Uncle Al".to_string(), 33).await?;
+
+        assert_eq!(
+            echo,
+            api::TwoQueryParams::Ok(api::Hello {
+                name: "Uncle Al".into(),
+                age: 33
+            })
+        );
+    }
+
+    println!("Success");
 
     Ok(())
 }
