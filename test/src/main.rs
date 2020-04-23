@@ -9,14 +9,17 @@ impl TestApi for Api {
     }
 
     async fn two_path_params(&self, name: String, age: i64) -> api::TwoPathParams {
-        api::TwoPathParams::Ok(api::Hello { name, age })
+        api::TwoPathParams::Ok(api::Hello {
+            myName: name,
+            my_age: age,
+        })
     }
 
-    async fn two_query_params(&self, name: String, age: i64) -> api::TwoQueryParams {
-        api::TwoQueryParams::Ok(api::Hello { name, age })
+    async fn two_query_params(&self, myName: String, my_age: i64) -> api::TwoQueryParams {
+        api::TwoQueryParams::Ok(api::Hello { myName, my_age })
     }
 
-    async fn nested_response(&self) -> api::NestedResponse {
+    async fn nestedResponse(&self) -> api::NestedResponse {
         api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
             first: api::PathsNestedResponseTypeGetResponsesFirst {
                 second: api::PathsNestedResponseTypeGetResponsesFirstSecond {},
@@ -53,20 +56,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
             echo,
             api::TwoPathParams::Ok(api::Hello {
-                name: "Uncle Al".into(),
-                age: 33
+                myName: "Uncle Al".into(),
+                my_age: 33
             })
         );
     }
 
     {
         let echo = client.two_query_params("Uncle Al".to_string(), 33).await?;
-
         assert_eq!(
             echo,
             api::TwoQueryParams::Ok(api::Hello {
-                name: "Uncle Al".into(),
-                age: 33
+                myName: "Uncle Al".into(),
+                my_age: 33
+            })
+        );
+    }
+
+    {
+        let nested = client.nestedResponse().await?;
+        assert_eq!(
+            nested,
+            api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
+                first: api::PathsNestedResponseTypeGetResponsesFirst {
+                    second: api::PathsNestedResponseTypeGetResponsesFirstSecond {}
+                }
             })
         );
     }

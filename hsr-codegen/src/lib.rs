@@ -219,16 +219,14 @@ struct Ident(String);
 impl FromStr for Ident {
     type Err = Error;
     fn from_str(val: &str) -> Result<Self> {
-        // Check the identifier string in valid.
-        // We use snake_case internally, but additionally allow mixedCase identifiers
-        // to be passed, since this is common in JS world
-        let snake = val.to_snake_case();
-        let mixed = val.to_mixed_case();
-        if val == snake || val == mixed {
-            Ok(Ident(snake))
+        // Check the string is a valid identifier
+        // We do not enforce any particular case
+        let ident_re = Regex::new("^([[:alpha:]]|_)([[:alnum:]]|_)*$").unwrap();
+        if ident_re.is_match(val) {
+            Ok(Ident(val.to_string()))
         } else {
             Err(invalid!(
-                "Bad identifier '{}', must be snake_case or camelCase",
+                "Bad identifier '{}' (not a valid Rust identifier)",
                 val
             ))
         }
@@ -369,8 +367,8 @@ impl RoutePath {
         let literal_re = Regex::new("^[[:alpha:]]([[:alnum:]]|_)*$").unwrap();
         let param_re = Regex::new(r#"^\{([[:alpha:]]([[:alnum:]]|_)*)\}$"#).unwrap();
 
-        if path.is_empty() || !path.starts_with('/') {
-            return Err(invalid!("Bad path '{}', must start with '/'", path));
+        if !path.starts_with('/') {
+            return Err(invalid!("Bad path '{}' (must start with '/')", path));
         }
 
         let mut segments = Vec::new();
@@ -702,6 +700,18 @@ mod tests {
             "/123_abc{xyz\\!\"£$%^}/456 asdf".to_snake_case(),
             "123_abc_xyz_456_asdf"
         )
+    }
+
+    #[test]
+    fn test_valid_identifier() {
+        assert!(Ident::from_str("x").is_ok());
+        assert!(Ident::from_str("_").is_ok());
+        assert!(Ident::from_str("x1").is_ok());
+        assert!(Ident::from_str("x1_23_aB").is_ok());
+
+        assert!(Ident::from_str("").is_err());
+        assert!(Ident::from_str("1abc").is_err());
+        assert!(Ident::from_str("abc!").is_err());
     }
 
     #[test]

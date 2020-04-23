@@ -17,7 +17,7 @@ paths:
   /twoPathParams/{my_name}/{myAge}:
     get:
       summary: echo name and age
-      operationId: twoPathParams
+      operationId: two_path_params
       parameters:
         - name: my_name
           in: path
@@ -42,7 +42,7 @@ paths:
   /twoQueryParams:
     get:
       summary: echo name and age
-      operationId: twoQueryParams
+      operationId: two_query_params
       parameters:
         - name: myName
           in: query
@@ -86,10 +86,10 @@ components:
   schemas:
     Hello:
       required:
-        - name
-        - age
+        - myName
+        - my_age
       properties:
-        name:
+        myName:
           type: string
-        age:
+        my_age:
           type: integer
