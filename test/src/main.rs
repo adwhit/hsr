@@ -4,8 +4,12 @@ struct Api;
 
 #[hsr::async_trait::async_trait(?Send)]
 impl TestApi for Api {
-    async fn status(&self) -> api::Status {
-        api::Status::Ok
+    async fn get_status(&self) -> api::GetStatus {
+        api::GetStatus::Ok
+    }
+
+    async fn set_status(&self, status: Option<String>) -> api::SetStatus {
+        api::SetStatus::Ok(status)
     }
 
     async fn two_path_params(&self, name: String, age: i64) -> api::TwoPathParams {
@@ -53,6 +57,14 @@ fn hello() -> api::Hello {
     }
 }
 
+fn nullable_struct() -> api::NullableStruct {
+    Some(api::NullableStructOpt {
+        this: Some("string".into()),
+        that: 123,
+        other: Some(vec!["string".into()]),
+    })
+}
+
 // TODO make this into a 'normal' rust test suite not just a big main function
 
 #[actix_rt::main]
@@ -74,7 +86,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = client::Client::new(uri2);
     println!("Testing endpoints");
 
-    client.status().await?;
+    assert_eq!(client.get_status().await?, api::GetStatus::Ok);
+
+    {
+        assert_eq!(
+            client.set_status(Some("some-status".into())).await?,
+            api::SetStatus::Ok(Some("some-status".into()))
+        );
+        assert_eq!(client.set_status(None).await?, api::SetStatus::Ok(None));
+    }
 
     {
         let echo = client.two_path_params("Alex".to_string(), 33).await?;
@@ -82,8 +102,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     {
-        let echo = client.two_query_params("Alex".to_string(), 33).await?;
+        let echo = client
+            .two_query_params("Alex".to_string(), Some(33))
+            .await?;
         assert_eq!(echo, api::TwoQueryParams::Ok(hello()));
+
+        let echo = client.two_query_params("Alex".to_string(), None).await?;
+        assert_eq!(
+            echo,
+            api::TwoQueryParams::Ok(api::Hello {
+                myName: "Alex".into(),
+                my_age: None
+            })
+        );
     }
 
     {

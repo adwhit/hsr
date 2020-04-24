@@ -9,10 +9,29 @@ paths:
   # Simplest possible route (?)
   /status:
     get:
-      operationId: status
+      operationId: get_status
       responses:
         '200':
           description: "Ok"
+
+    post:
+      operationId: set_status
+      requestBody:
+        description: set status
+        required: false
+        content:
+          application/json:
+            schema:
+              nullable: true
+              type: string
+      responses:
+        '200':
+          description: "Ok"
+          content:
+            application/json:
+              schema:
+                nullable: true
+                type: string
 
   /twoPathParams/{my_name}/{myAge}:
     get:
@@ -128,3 +147,20 @@ components:
         my_age:
           nullable: true
           type: integer
+
+    NullableStruct:
+      nullable: true
+      required:
+        - that
+      properties:
+        this:
+          nullable: true
+          type: string
+        that:
+          nullable: false
+          type: integer
+        other:
+          nullable: false
+          type: array
+          items:
+            type: string

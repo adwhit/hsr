@@ -17,8 +17,9 @@ use std::ops::Deref;
 use crate::{
     dereference, get_derive_tokens,
     route::{validate_routes, Route},
-    unwrap_ref, variant_from_status_code, ApiPath, Error, Ident, Method, MethodWithBody,
-    MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode, TypeName, TypePath,
+    unwrap_ref, variant_from_status_code, ApiPath, Error, FieldMetadata, Ident, Method,
+    MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode,
+    TypeMetadata, TypeName, TypePath, Visibility,
 };
 use proc_macro2::Ident as QIdent;
 
@@ -42,7 +43,7 @@ fn lookup_type_recursive<'a>(
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Type {
-    meta: SchemaData,
+    meta: TypeMetadata,
     typ: TypeInner,
 }
 
@@ -64,20 +65,12 @@ enum Primitive {
     Bool,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum IsRequired {
-    Yes,
-    No,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
     // primitives
     Primitive(Primitive),
     // An array of of some inner type
     Array(Box<ReferenceOr<Type>>),
-    // A type which is nullable
-    Option(Box<TypeInner>),
     // Any type. Could be anything! Probably a user-error
     Any,
     AllOf(Vec<ReferenceOr<Type>>),
@@ -87,19 +80,14 @@ enum TypeInner {
 
 impl TypeInner {
     /// Attach metadata to
-    fn into_option(self) -> TypeInner {
-        Self::Option(Box::new(self))
-    }
-
-    /// Attach metadata to
-    fn with_meta(self, meta: SchemaData) -> Type {
+    fn with_meta(self, meta: TypeMetadata) -> Type {
         Type { meta, typ: self }
     }
 
     /// Attach metadata to
     fn no_meta(self) -> Type {
         Type {
-            meta: SchemaData::default(),
+            meta: TypeMetadata::default(),
             typ: self,
         }
     }
@@ -107,8 +95,9 @@ impl TypeInner {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Struct {
-    // annoyingly each field must carry around whether it is 'required'
-    fields: Vec<(Ident, IsRequired)>,
+    // each field must carry some struct-specific metadata
+    // (on top of metadata attached to the type)
+    fields: Vec<(Ident, FieldMetadata)>,
 }
 
 impl Struct {
@@ -128,12 +117,8 @@ impl Struct {
             let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
             assert!(type_index.insert(type_path, ty.clone()).is_none());
-            let required = if required_args.contains(name) {
-                IsRequired::Yes
-            } else {
-                IsRequired::No
-            };
-            fields.push((name.parse()?, required));
+            let meta = FieldMetadata::default().required(required_args.contains(name));
+            fields.push((name.parse()?, meta));
         }
         Ok(Self { fields })
     }
@@ -262,46 +247,59 @@ fn walk_operation(
         None => invalid!("Missing operationId for '{}'", route_path),
     }?;
 
+    // A LOT of work goes into getting the path and query parameters correct!
+
     let mut path_params = Map::new();
     let mut query_params = Map::new();
 
     let mut expected_route_params: Set<&str> = route_path.path_args().collect();
+    let mut duplicate_param_name_check = Set::new();
 
     for param in &op.parameters {
-        // for each parameter we gather the type
-        // but we also need to collect the Queries and Paths to make the
-        // parent Query and Path types
+        // for each parameter we gather the type but we also need to
+        // collect the Queries and Paths to make the parent Query and Path types
         let param = dereference(param, &components.parameters)?;
         match param {
-            Path { parameter_data, .. } => match &parameter_data.format {
-                ParameterSchemaOrContent::Schema(schema) => {
-                    if !expected_route_params.remove(parameter_data.name.as_str()) {
-                        invalid!("path parameter '{}' not found in path", parameter_data.name)
-                    }
-                    if !parameter_data.required {
-                        invalid!(
-                            "Path parameter '{}' must be 'required'",
-                            parameter_data.name
-                        )
-                    }
-                    let path = path.clone().push("path").push(&parameter_data.name);
-                    let name: Ident = parameter_data.name.parse()?;
-                    path_params.insert(name, TypePath::from(path.clone()));
-                    let typ = build_type_recursive(&schema, path.clone(), type_index)?;
-                    assert!(type_index.insert(TypePath::from(path), typ).is_none());
+            Path { parameter_data, .. } => {
+                if !duplicate_param_name_check.insert(&parameter_data.name) {
+                    invalid!("Duplicated parameter '{}'", parameter_data.name)
                 }
-                ParameterSchemaOrContent::Content(_) => todo!(),
-            },
-            Query { parameter_data, .. } => match &parameter_data.format {
-                ParameterSchemaOrContent::Schema(schema) => {
-                    let path = path.clone().push("query").push(&parameter_data.name);
-                    let name: Ident = parameter_data.name.parse()?;
-                    query_params.insert(name, TypePath::from(path.clone()));
-                    let typ = build_type_recursive(&schema, path.clone(), type_index)?;
-                    assert!(type_index.insert(TypePath::from(path), typ).is_none());
+                if !expected_route_params.remove(parameter_data.name.as_str()) {
+                    invalid!("path parameter '{}' not found in path", parameter_data.name)
                 }
-                ParameterSchemaOrContent::Content(_) => todo!(),
-            },
+                if !parameter_data.required {
+                    invalid!(
+                        "Path parameter '{}' must be 'required'",
+                        parameter_data.name
+                    )
+                }
+                let path = path.clone().push("path").push(&parameter_data.name);
+                let name: Ident = parameter_data.name.parse()?;
+                path_params.insert(name, TypePath::from(path.clone()));
+                match &parameter_data.format {
+                    ParameterSchemaOrContent::Schema(schema) => {
+                        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
+                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
+                    }
+                    ParameterSchemaOrContent::Content(_) => todo!(),
+                }
+            }
+            Query { parameter_data, .. } => {
+                if !duplicate_param_name_check.insert(&parameter_data.name) {
+                    invalid!("Duplicated parameter '{}'", parameter_data.name)
+                }
+                let path = path.clone().push("query").push(&parameter_data.name);
+                let name: Ident = parameter_data.name.parse()?;
+                let meta = FieldMetadata::default().required(parameter_data.required);
+                query_params.insert(name, (meta, TypePath::from(path.clone())));
+                match &parameter_data.format {
+                    ParameterSchemaOrContent::Schema(schema) => {
+                        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
+                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
+                    }
+                    ParameterSchemaOrContent::Content(_) => todo!(),
+                }
+            }
             Header { .. } => todo!(),
             Cookie { .. } => todo!(),
         };
@@ -319,12 +317,13 @@ fn walk_operation(
     } else {
         // construct a path param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<(Ident, IsRequired)> = path_params
+        let fields: Vec<(Ident, FieldMetadata)> = path_params
             .keys()
             .cloned()
-            .map(|v| (v, IsRequired::Yes))
+            .map(|v| (v, FieldMetadata::default().required(true)))
             .collect();
-        let typ = TypeInner::Struct(Struct { fields }).no_meta();
+        let typ = TypeInner::Struct(Struct { fields })
+            .with_meta(TypeMetadata::default().visibility(Visibility::Private));
         let type_path = TypePath::from(path.clone().push("path"));
         let exists = type_index
             .insert(type_path.clone(), ReferenceOr::Item(typ))
@@ -338,12 +337,12 @@ fn walk_operation(
     } else {
         // construct a query param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<(Ident, IsRequired)> = query_params
-            .keys()
-            .cloned()
-            .map(|v| (v, IsRequired::Yes))
+        let fields: Vec<(Ident, FieldMetadata)> = query_params
+            .iter()
+            .map(|(name, (meta, _path))| (name.clone(), meta.clone()))
             .collect();
-        let typ = TypeInner::Struct(Struct { fields }).no_meta();
+        let typ = TypeInner::Struct(Struct { fields })
+            .with_meta(TypeMetadata::default().visibility(Visibility::Private));
         let type_path = TypePath::from(path.clone().push("query"));
         let exists = type_index
             .insert(type_path.clone(), ReferenceOr::Item(typ))
@@ -499,7 +498,7 @@ fn build_type_recursive(
             } else {
                 TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
             };
-            return Ok(ReferenceOr::Item(inner.with_meta(meta)));
+            return Ok(ReferenceOr::Item(inner.with_meta(meta.into())));
         }
         SchemaKind::AllOf { all_of: schemas } => {
             let allof_types = schemas
@@ -516,7 +515,7 @@ fn build_type_recursive(
             // combining other types together. We can't do this yet, however -
             // we will have to wait until we have 'seen' (i.e. walked) every type
             return Ok(ReferenceOr::Item(
-                TypeInner::AllOf(allof_types).with_meta(meta),
+                TypeInner::AllOf(allof_types).with_meta(meta.into()),
             ));
         }
         // TODO OneOf
@@ -546,7 +545,7 @@ fn build_type_recursive(
             TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
         }
     };
-    Ok(ReferenceOr::Item(typ.with_meta(meta)))
+    Ok(ReferenceOr::Item(typ.with_meta(meta.into())))
 }
 
 /// Generate code that defines a `struct` or `type` alias for each object found
@@ -583,6 +582,8 @@ fn generate_rust_type(
                     #[doc = #s]
                 }
             });
+            let nullable = typ.meta.nullable;
+            let visibility = typ.meta.visibility;
             use TypeInner as T;
             match &typ.typ {
                 T::Any => {
@@ -602,9 +603,16 @@ fn generate_rust_type(
                 T::OneOf(_) => todo!(),
                 T::Primitive(p) => {
                     let id = crate::ident(p);
-                    quote! {
-                        #descr
-                        type #name = #id;
+                    if nullable {
+                        quote! {
+                            #descr
+                            type #name = Option<#id>;
+                        }
+                    } else {
+                        quote! {
+                            #descr
+                            type #name = #id;
+                        }
                     }
                 }
                 T::Array(_) => {
@@ -612,19 +620,16 @@ fn generate_rust_type(
                     let inner_path = TypePath::from(path.push("array"));
                     assert!(lookup.contains_key(&inner_path));
                     let inner_path = inner_path.canonicalize();
-                    quote! {
-                        #descr
-                        type #name = Vec<#inner_path>;
-                    }
-                }
-                T::Option(_inner) => {
-                    let path = ApiPath::from(type_path.clone());
-                    let inner_path = TypePath::from(path.push("option"));
-                    assert!(lookup.contains_key(&inner_path));
-                    let inner_path = inner_path.canonicalize();
-                    quote! {
-                        #descr
-                        type #name = Option<#inner_path>;
+                    if nullable {
+                        quote! {
+                            #descr
+                            type #name = Option<Vec<#inner_path>>;
+                        }
+                    } else {
+                        quote! {
+                            #descr
+                            type #name = Vec<#inner_path>;
+                        }
                     }
                 }
                 T::Struct(strukt) => {
@@ -632,28 +637,53 @@ fn generate_rust_type(
                     let fields: Vec<TokenStream> = strukt
                         .fields
                         .iter()
-                        .map(|(field, required)| {
-                            // we have to look up the field type to see if it
-                            // is nullable, and if so, make it into an option
+                        .map(|(field, meta)| {
                             let path = ApiPath::from(type_path.clone());
                             let field_type_path = TypePath::from(path.push(field.deref()));
                             let field_type_name = field_type_path.canonicalize();
+
+                            // Tricky bit. The field may be 'not required', from POV of the struct
+                            // but also the type itself may be nullable. This is supposed to represent
+                            // how in javascript an object key may be 'missing', or it may be 'null'
+                            // This doesn't work well for Rust which has no concept of 'missing',
+                            // so both these cases are covered by making it and Option<T>. But this
+                            // means if a field is both 'not required' and 'nullable', we run risk of
+                            // doubling the type up as Option<Option<T>>. We hack around this by reaching
+                            // into to type and combining the two attributes into one
+
                             let ref_or = lookup.get(&field_type_path).unwrap(); // this lookup should not fail
                             let field_type = lookup_type_recursive(ref_or, lookup)?; // this one can
-                            let def = if field_type.meta.nullable || *required == IsRequired::No {
-                                quote! {Option<#field_type_name>}
-                            } else {
+                            let required = meta.required;
+                            let nullable = field_type.meta.nullable;
+                            let def = if nullable || (required && !nullable) {
                                 quote! {#field_type_name}
+                            } else {
+                                quote! {Option<#field_type_name>}
                             };
                             Ok(def)
                         })
                         .collect::<Result<_>>()?;
                     let derives = get_derive_tokens();
-                    quote! {
-                        #descr
-                        #derives
-                        pub struct #name {
-                            #(pub #fieldnames: #fields),*
+                    if nullable {
+                        // Uh oh. We can't define a 'nullable stuct'. Instead make a struct with
+                        // a different name and create alias to it
+                        let new_path = TypePath::from(ApiPath::from(type_path.clone()).push("opt"));
+                        let new_name = new_path.canonicalize();
+                        quote! {
+                            #descr
+                            #derives
+                            #visibility struct #new_name {
+                                #(pub #fieldnames: #fields),*
+                            }
+                            #visibility type #name = Option<#new_name>;
+                        }
+                    } else {
+                        quote! {
+                            #descr
+                            #derives
+                            #visibility struct #name {
+                                #(pub #fieldnames: #fields),*
+                            }
                         }
                     }
                 }
@@ -721,7 +751,10 @@ fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Str
         }
     }
     Ok(Struct {
-        fields: base.into_iter().map(|(n, r)| (n.clone(), *r)).collect(),
+        fields: base
+            .into_iter()
+            .map(|(n, m)| (n.clone(), m.clone()))
+            .collect(),
     })
 }
 

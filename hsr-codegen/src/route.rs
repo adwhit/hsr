@@ -22,7 +22,7 @@ pub(crate) struct Route {
     method: Method,
     path: RoutePath,
     path_params: Option<(TypePath, Map<Ident, TypePath>)>,
-    query_params: Option<(TypePath, Map<Ident, TypePath>)>,
+    query_params: Option<(TypePath, Map<Ident, (FieldMetadata, TypePath)>)>,
     return_types: Map<StatusCode, Option<TypePath>>,
     default_return_type: DefaultResponse,
 }
@@ -167,8 +167,18 @@ impl Route {
             .map(|(_, params)| {
                 params
                     .iter()
-                    .map(|(id, ty)| (id, ty.canonicalize()))
-                    .map(|(id, ty)| quote! { #id: #ty })
+                    .map(|(id, (meta, ty))| {
+                        let type_name = ty.canonicalize();
+                        if meta.required {
+                            quote! {
+                                #id: #type_name
+                            }
+                        } else {
+                            quote! {
+                                #id: Option<#type_name>
+                            }
+                        }
+                    })
                     .collect()
             })
             .unwrap_or(Vec::new());
@@ -179,6 +189,7 @@ impl Route {
             Some(quote! { #name: #body_ty, })
         });
         let docs = self.summary.as_ref().map(doc_comment);
+        // define the trait method which the user must implement
         quote! {
             #docs
             async fn #opid(&self, #(#paths,)* #(#queries,)* #body_arg_opt) -> #api_return_ty;
@@ -206,16 +217,27 @@ impl Route {
             })
             .unwrap_or((Vec::new(), Vec::new()));
 
-        let (query_names, query_types) = self
+        let query_name_type_pairs = self
             .query_params
             .as_ref()
             .map(|(_, params)| {
                 params
                     .iter()
-                    .map(|(id, ty)| (id, ty.canonicalize()))
-                    .unzip()
+                    .map(|(id, (meta, ty))| {
+                        let type_name = ty.canonicalize();
+                        if meta.required {
+                            quote! {
+                                #id: #type_name
+                            }
+                        } else {
+                            quote! {
+                                #id: Option<#type_name>
+                            }
+                        }
+                    })
+                    .collect()
             })
-            .unwrap_or((Vec::new(), Vec::new()));
+            .unwrap_or(Vec::new());
 
         // template the code to add query parameters to the url, if necessary
         let add_query_string_to_url = self.query_params.as_ref().map(|(type_path, params)| {
@@ -321,7 +343,7 @@ impl Route {
             pub async fn #opid(
                 &self,
                 #(#path_names: #path_types,)*
-                #(#query_names: #query_types,)*
+                #(#query_name_type_pairs,)*
                 #body_arg_opt
             ) -> Result<#result_type, ClientError>
             {
@@ -384,6 +406,7 @@ impl Route {
             .as_ref()
             .map(|(_, params)| params.keys().collect::<Vec<_>>())
             .unwrap_or_default();
+
         let (query_arg_opt, query_destructure_opt) = {
             self.query_params.as_ref().map(|(name, _params)| {
                 let name = name.canonicalize();
@@ -413,6 +436,7 @@ impl Route {
         let return_ty = self.return_ty_name();
 
         let code = quote! {
+            // define the 'top level' function which is called directly by actix
             async fn #opid<A: #trait_name + Send + Sync>(
                 data: AxData<A>,
                 #path_arg_opt

@@ -398,6 +398,67 @@ impl RoutePath {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Visibility {
+    Public,
+    Private,
+}
+
+impl quote::ToTokens for Visibility {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let tok = match self {
+            Visibility::Public => quote! {pub},
+            Visibility::Private => quote! {},
+        };
+        tok.to_tokens(tokens)
+    }
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Public
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TypeMetadata {
+    description: Option<String>,
+    nullable: bool,
+    visibility: Visibility,
+}
+
+impl TypeMetadata {
+    fn nullable(self, nullable: bool) -> Self {
+        Self { nullable, ..self }
+    }
+
+    fn visibility(self, visibility: Visibility) -> Self {
+        Self { visibility, ..self }
+    }
+}
+
+impl From<openapiv3::SchemaData> for TypeMetadata {
+    fn from(from: openapiv3::SchemaData) -> Self {
+        Self {
+            description: from.description,
+            nullable: from.nullable,
+            visibility: Visibility::Public,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct FieldMetadata {
+    description: Option<String>,
+    required: bool,
+}
+
+impl FieldMetadata {
+    fn required(self, required: bool) -> Self {
+        Self { required, ..self }
+    }
+}
+
 pub(crate) fn variant_from_status_code(code: &StatusCode) -> TypeName {
     code.canonical_reason()
         .and_then(|reason| reason.to_camel_case().parse().ok())
