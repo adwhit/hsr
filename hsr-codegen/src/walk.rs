@@ -74,7 +74,7 @@ enum TypeInner {
     // Any type. Could be anything! Probably a user-error
     Any,
     AllOf(Vec<ReferenceOr<Type>>),
-    OneOf(Vec<ReferenceOr<TypePath>>),
+    OneOf(Vec<TypePath>),
     Struct(Struct),
 }
 
@@ -508,9 +508,24 @@ fn build_type_recursive(
                 TypeInner::AllOf(allof_types).with_meta(meta.into()),
             ));
         }
-        // TODO OneOf
-        SchemaKind::AnyOf { any_of } => todo!("anyof"),
-        SchemaKind::OneOf { one_of } => todo!("oneof"),
+        SchemaKind::AnyOf { any_of: schemas } | SchemaKind::OneOf { one_of: schemas } => {
+            let oneof_types = schemas
+                .iter()
+                .enumerate()
+                .map(|(ix, schema)| {
+                    let path = path.clone().push(format!("OneOf_{}", ix));
+                    let innerty = build_type_recursive(schema, path.clone(), type_index)?;
+                    let type_path = TypePath::from(path);
+                    assert!(type_index
+                        .insert(type_path.clone(), innerty.clone())
+                        .is_none());
+                    Ok(type_path)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(ReferenceOr::Item(
+                TypeInner::OneOf(oneof_types).with_meta(meta.into()),
+            ));
+        }
     };
     let typ = match ty {
         // TODO make enums from string
@@ -557,6 +572,7 @@ fn generate_rust_type(
     typ: &ReferenceOr<Type>,
     lookup: &TypeLookup,
 ) -> Result<TokenStream> {
+    debug!("generate: {}", ApiPath::from(type_path.clone()));
     let name = type_path.canonicalize();
     let def = match typ {
         ReferenceOr::Reference { reference } => {
@@ -590,19 +606,27 @@ fn generate_rust_type(
                     // Defer to struct impl
                     generate_rust_type(type_path, &typ, lookup)?
                 }
-                T::OneOf(_) => todo!(),
+                T::OneOf(variants) => {
+                    let variants: Vec<_> = variants
+                        .iter()
+                        .map(|var| (var.canonicalize(), Some(var.clone())))
+                        .collect();
+                    generate_enum_def(&name, &variants, &DefaultResponse::None)
+                }
                 T::Primitive(p) => {
                     let id = crate::ident(p);
-                    if nullable {
+                    let ty = if nullable {
                         quote! {
-                            #descr
-                            type #name = Option<#id>;
+                            Option<#id>
                         }
                     } else {
                         quote! {
-                            #descr
-                            type #name = #id;
+                            #id
                         }
+                    };
+                    quote! {
+                        #descr
+                        type #name = #ty;
                     }
                 }
                 T::Array(_) => {

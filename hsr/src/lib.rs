@@ -24,35 +24,12 @@ pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
 use actix_http::http::StatusCode;
-use actix_web::{Error as ActixError, HttpRequest, HttpResponse, Responder};
-use std::fmt;
-
-#[derive(Debug, Copy, Clone)]
-/// Actix-web responder that always returns Ok
-// replacement for returning bare '()' which was removed in 2.0
-pub struct Success;
-
-impl fmt::Display for Success {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "success")
-    }
-}
-
-impl Responder for Success {
-    type Error = actix_web::Error;
-    type Future = futures::future::Ready<Result<HttpResponse, Self::Error>>;
-
-    fn respond_to(self, req: &HttpRequest) -> Self::Future {
-        return HttpResponse::Ok().finish().respond_to(req);
-    }
-}
+use actix_web::{Error as ActixError, HttpResponse};
 
 /// Associate an http status code with a type. Defaults to 501 Internal Server Error
 pub trait HasStatusCode {
     /// The http status code associated with the type
-    fn status_code(&self) -> StatusCode {
-        StatusCode::INTERNAL_SERVER_ERROR
-    }
+    fn status_code(&self) -> StatusCode;
 }
 
 /// Errors that may be returned by the client, apart from those explicitly
@@ -67,8 +44,6 @@ pub enum ClientError {
     #[error("Actix error: {}", _0)]
     Actix(#[from] ActixError),
 }
-
-impl HasStatusCode for ClientError {}
 
 pub fn configure_spec(
     cfg: &mut actix_web::web::ServiceConfig,

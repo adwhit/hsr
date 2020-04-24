@@ -47,6 +47,10 @@ impl TestApi for Api {
             },
         })
     }
+
+    async fn anything_goes(&self, one_of: api::OneOfTest) -> api::AnythingGoes {
+        api::AnythingGoes::Ok(one_of)
+    }
 }
 
 // Quickly generate some data
@@ -67,7 +71,7 @@ fn nullable_struct() -> api::NullableStruct {
     })
 }
 
-fn combination() -> api::Combination {
+fn all_of_test() -> api::AllOfTest {
     let blob = serde_json::json!({
         "myName": "Alex",
         "height": 1.88,
@@ -101,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = client::Client::new(uri2);
     println!("Testing endpoints");
 
-    let _ = combination();
+    let _ = all_of_test();
 
     assert_eq!(client.get_status().await?, api::GetStatus::Ok);
 
@@ -169,6 +173,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
         );
+    }
+
+    {
+        // TODO I doubt this is being serialized properly. Need to send as 'untagged'
+        let payload = api::OneOfTest::OneOfTestOneOf0(hello());
+        let body = client.anything_goes(payload.clone()).await?;
+        assert_eq!(body, api::AnythingGoes::Ok(payload));
     }
 
     println!("Success");

@@ -13,17 +13,17 @@ impl Pet {
     }
 }
 
-// An error to be used internally. Generally if this
-// gets returned from the top level, we just want to return "HTTP 500"
+// Define an error type to be used internally
 pub enum InternalError {
     BadConnection,
     ParseFailure,
 }
 
-type ApiResult<T> = std::result::Result<T, InternalError>;
+type Result<T> = std::result::Result<T, InternalError>;
 
 // We define an object against which to implement our API trait
 pub struct Api {
+    // our database is just some Vec
     database: lock::Mutex<Vec<Pet>>,
 }
 
@@ -35,7 +35,7 @@ impl Api {
         }
     }
 
-    async fn connect_db(&self) -> ApiResult<lock::MutexGuard<'_, Vec<Pet>>> {
+    async fn connect_db(&self) -> Result<lock::MutexGuard<'_, Vec<Pet>>> {
         if rand::random::<f32>() > 0.95 {
             Err(InternalError::BadConnection)
         } else {
@@ -43,17 +43,22 @@ impl Api {
         }
     }
 
-    async fn all_pets(&self) -> ApiResult<Vec<Pet>> {
-        let db = self.connect_db().await?;
-        Ok(db.clone())
+    // Define some basic CRUD operations for our database
+
+    async fn add_pet(&self, new_pet: NewPet) -> Result<usize> {
+        let mut db = self.connect_db().await?;
+        let id = db.len();
+        let new_pet = Pet::new(id as i64, new_pet.name, new_pet.tag);
+        db.push(new_pet);
+        Ok(id)
     }
 
-    async fn lookup_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
+    async fn lookup_pet(&self, id: usize) -> Result<Option<Pet>> {
         let db = self.connect_db().await?;
         Ok(db.get(id).cloned())
     }
 
-    async fn remove_pet(&self, id: usize) -> ApiResult<Option<Pet>> {
+    async fn remove_pet(&self, id: usize) -> Result<Option<Pet>> {
         let mut db = self.connect_db().await?;
         if id < db.len() {
             Ok(Some(db.remove(id)))
@@ -62,15 +67,13 @@ impl Api {
         }
     }
 
-    async fn add_pet(&self, new_pet: NewPet) -> ApiResult<usize> {
-        let mut db = self.connect_db().await?;
-        let id = db.len();
-        let new_pet = Pet::new(id as i64, new_pet.name, new_pet.tag);
-        db.push(new_pet);
-        Ok(id)
+    async fn list_all_pets(&self) -> Result<Vec<Pet>> {
+        let db = self.connect_db().await?;
+        Ok(db.clone())
     }
 
-    fn server_health_check(&self) -> ApiResult<()> {
+    // every server needs a status check!
+    fn server_health_check(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -93,7 +96,7 @@ impl PetstoreApi for Api {
         } else {
             Regex::new(".?").unwrap()
         };
-        let pets = match self.all_pets().await {
+        let pets = match self.list_all_pets().await {
             Ok(p) => p,
             Err(_) => return api::GetAllPets::BadRequest,
         };
@@ -106,7 +109,7 @@ impl PetstoreApi for Api {
     }
 
     async fn create_pet(&self, new_pet: NewPet) -> api::CreatePet {
-        let res: ApiResult<()> = async {
+        let res: Result<()> = async {
             let () = self.server_health_check()?;
             let _ = self.add_pet(new_pet).await?; // TODO return usize
             Ok(())
@@ -146,3 +149,5 @@ impl PetstoreApi for Api {
         }
     }
 }
+
+// That's it! Your server is ready. See bin/server.rs to see how to launch it
