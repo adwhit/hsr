@@ -22,6 +22,12 @@ use quote::quote;
 use regex::Regex;
 use thiserror::Error;
 
+macro_rules! invalid {
+    ($($arg:tt)+) => (
+        return Err(Error::Validation(format!($($arg)+)))
+    );
+}
+
 mod route;
 mod walk;
 
@@ -41,49 +47,22 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Yaml Error: {}", _0)]
     Yaml(#[from] serde_yaml::Error),
-    #[error("Codegen failed")]
-    CodeGen,
-    #[error("Bad reference: \"{}\"", _0)]
+    #[error("Codegen failed: {}", _0)]
+    BadCodegen(String),
+    #[error("Bad reference: {}", _0)]
     BadReference(String),
-    #[error("Invalid schema: \"{}\"", _0)]
-    BadSchema(String),
-    #[error("Unexpected reference: \"{}\"", _0)]
-    UnexpectedReference(String),
-    #[error("Schema not supported: {:?}", _0)]
-    UnsupportedKind(SchemaKind),
-    #[error("Definition is too complex: {:?}", _0)]
-    TooComplex(Schema),
-    #[error("Empty struct")]
-    EmptyStruct,
-    #[error("Rust does not support structural typing")]
-    NotStructurallyTyped,
-    #[error("Path is malformed: {}", _0)]
-    MalformedPath(String),
-    #[error("No operation id given for route {}", _0)]
-    NoOperationId(String),
-    #[error("TODO: {}", _0)]
-    Todo(String),
-    #[error("{} is not a valid identifier", _0)]
-    BadIdentifier(String),
-    #[error("{} is not a valid type name", _0)]
-    BadTypeName(String),
-    #[error("Malformed codegen")]
-    BadCodegen,
-    #[error("status code '{}' not supported", _0)]
-    BadStatusCode(ApiStatusCode),
-    #[error("Duplicate name: {}", _0)]
-    DuplicateName(String),
+    #[error("OpenAPI validation failed: {}", _0)]
+    Validation(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Unwrap the reference, or fail
+/// TODO get rid of this
 fn unwrap_ref<T>(item: &ReferenceOr<T>) -> Result<&T> {
     match item {
         ReferenceOr::Item(item) => Ok(item),
-        ReferenceOr::Reference { reference } => {
-            Err(Error::UnexpectedReference(reference.to_string()))
-        }
+        ReferenceOr::Reference { reference } => Err(Error::BadReference(reference.to_string())),
     }
 }
 
@@ -147,7 +126,7 @@ impl Method {
         match method {
             R::Get | R::Head | R::Options | R::Trace => {
                 if body_type.is_some() {
-                    return Err(Error::Todo("eh".into()));
+                    invalid!("Method '{}' canoot have a body", method);
                 }
             }
             _ => {}
@@ -240,15 +219,13 @@ struct Ident(String);
 impl FromStr for Ident {
     type Err = Error;
     fn from_str(val: &str) -> Result<Self> {
-        // Check the identifier string in valid.
-        // We use snake_case internally, but additionally allow mixedCase identifiers
-        // to be passed, since this is common in JS world
-        let snake = val.to_snake_case();
-        let mixed = val.to_mixed_case();
-        if val == snake || val == mixed {
-            Ok(Ident(snake))
+        // Check the string is a valid identifier
+        // We do not enforce any particular case
+        let ident_re = Regex::new("^([[:alpha:]]|_)([[:alnum:]]|_)*$").unwrap();
+        if ident_re.is_match(val) {
+            Ok(Ident(val.to_string()))
         } else {
-            Err(Error::BadIdentifier(val.to_string()))
+            invalid!("Bad identifier '{}' (not a valid Rust identifier)", val)
         }
     }
 }
@@ -339,7 +316,7 @@ impl FromStr for TypeName {
         if val == camel {
             Ok(TypeName(camel))
         } else {
-            Err(Error::BadTypeName(val.to_string()))
+            invalid!("Bad type name '{}', must be ClassCase", val)
         }
     }
 }
@@ -357,7 +334,7 @@ enum PathSegment {
     Parameter(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RoutePath {
     segments: Vec<PathSegment>,
 }
@@ -383,43 +360,102 @@ impl fmt::Display for RoutePath {
 impl RoutePath {
     /// Check a path is well-formed and break it into its respective `PathSegment`s
     fn analyse(path: &str) -> Result<RoutePath> {
-        // TODO lazy static
-        let literal_re = Regex::new("^[[:alnum:]]+$").unwrap();
-        let param_re = Regex::new(r#"^\{([[:alnum:]]+)\}$"#).unwrap();
+        // "An alpha optionally followed by any of (alpha, number or _)"
+        let literal_re = Regex::new("^[[:alpha:]]([[:alnum:]]|_)*$").unwrap();
+        let param_re = Regex::new(r#"^\{([[:alpha:]]([[:alnum:]]|_)*)\}$"#).unwrap();
 
-        if path.is_empty() || !path.starts_with('/') {
-            return Err(Error::MalformedPath(path.to_string()));
+        if !path.starts_with('/') {
+            invalid!("Bad path '{}' (must start with '/')", path);
         }
 
         let mut segments = Vec::new();
 
+        let mut dupe_params = Set::new();
         for segment in path.split('/').skip(1) {
-            // ignore trailing slashes
-            if segment.is_empty() {
-                continue;
-            }
             if literal_re.is_match(segment) {
                 segments.push(PathSegment::Literal(segment.to_string()))
             } else if let Some(seg) = param_re.captures(segment) {
-                segments.push(PathSegment::Parameter(
-                    seg.get(1).unwrap().as_str().to_string(),
-                ))
+                let param = seg.get(1).unwrap().as_str().to_string();
+                if !dupe_params.insert(param.clone()) {
+                    invalid!("Duplicate parameter in path '{}'", path);
+                }
+                segments.push(PathSegment::Parameter(param))
             } else {
-                return Err(Error::MalformedPath(path.to_string()));
+                invalid!("Bad path '{}'", path);
             }
         }
-        // TODO check for duplicate parameter names
         Ok(RoutePath { segments })
     }
 
     fn path_args(&self) -> impl Iterator<Item = &str> {
         self.segments.iter().filter_map(|s| {
-            if let PathSegment::Parameter(ref s) = s {
-                Some(s.as_str())
+            if let PathSegment::Parameter(ref p) = s {
+                Some(p.as_ref())
             } else {
                 None
             }
         })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Visibility {
+    Public,
+    Private,
+}
+
+impl quote::ToTokens for Visibility {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let tok = match self {
+            Visibility::Public => quote! {pub},
+            Visibility::Private => quote! {},
+        };
+        tok.to_tokens(tokens)
+    }
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Public
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TypeMetadata {
+    description: Option<String>,
+    nullable: bool,
+    visibility: Visibility,
+}
+
+impl TypeMetadata {
+    fn nullable(self, nullable: bool) -> Self {
+        Self { nullable, ..self }
+    }
+
+    fn visibility(self, visibility: Visibility) -> Self {
+        Self { visibility, ..self }
+    }
+}
+
+impl From<openapiv3::SchemaData> for TypeMetadata {
+    fn from(from: openapiv3::SchemaData) -> Self {
+        Self {
+            description: from.description,
+            nullable: from.nullable,
+            visibility: Visibility::Public,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct FieldMetadata {
+    description: Option<String>,
+    required: bool,
+}
+
+impl FieldMetadata {
+    fn required(self, required: bool) -> Self {
+        Self { required, ..self }
     }
 }
 
@@ -457,10 +493,7 @@ fn generate_rust_interface(
     quote! {
         #descr
         #[hsr::async_trait::async_trait(?Send)]
-        pub trait #trait_name: 'static {
-            type Error: HasStatusCode;
-            fn new(host: Url) -> Self;
-
+        pub trait #trait_name: 'static + Send + Sync {
             #methods
         }
     }
@@ -504,13 +537,13 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
         pub mod server {
             use super::*;
 
-            fn configure_hsr<A: #trait_name + Send + Sync>(cfg: &mut actix_web::web::ServiceConfig) {
+            fn configure_hsr<A: #trait_name>(cfg: &mut actix_web::web::ServiceConfig) {
                 cfg #(.service(#resources))*;
             }
 
             /// Serve the API on a given host.
             /// Once started, the server blocks indefinitely.
-            pub async fn serve<A: #trait_name + Send + Sync>(cfg: hsr::Config) -> std::io::Result<()> {
+            pub async fn serve<A: #trait_name>(api: A, cfg: hsr::Config) -> std::io::Result<()> {
                 // We register the user-supplied Api as a Data item.
                 // You might think it would be cleaner to generate out API trait
                 // to not take "self" at all (only inherent impls) and then just
@@ -519,7 +552,7 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
                 // handlers, so we kill two birds with one stone by stashing the Api
                 // as data, pulling then it back out upon each request and calling
                 // the handler as a method
-                let api = AxData::new(A::new(cfg.host.clone()));
+                let api = AxData::new(api);
 
                 let server = HttpServer::new(move || {
                     App::new()
@@ -544,7 +577,7 @@ fn generate_rust_server(routemap: &Map<String, Vec<Route>>, trait_name: &TypeNam
     server
 }
 
-fn generate_rust_client(routes: &Map<String, Vec<Route>>, trait_name: &TypeName) -> TokenStream {
+fn generate_rust_client(routes: &Map<String, Vec<Route>>) -> TokenStream {
     let mut method_impls = TokenStream::new();
     for (_, route_methods) in routes {
         for route in route_methods {
@@ -633,7 +666,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
     let rust_server = generate_rust_server(&routes, &trait_name);
 
     debug!("Generate client");
-    let rust_client = generate_rust_client(&routes, &trait_name);
+    let rust_client = generate_rust_client(&routes);
 
     let code = quote! {
         #[allow(dead_code)]
@@ -643,7 +676,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         const UI_TEMPLATE: &'static str = #SWAGGER_UI_TEMPLATE;
 
         mod __imports {
-            pub use hsr::{HasStatusCode, Void};
+            pub use hsr::HasStatusCode;
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
                 Error as ActixError,
@@ -654,6 +687,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::url::Url;
             pub use hsr::actix_http::http::{StatusCode};
             pub use hsr::futures::future::{Future, FutureExt, TryFutureExt, Ready, ok as fut_ok};
+            pub use hsr::serde_json::Value as JsonValue;
 
             // macros re-exported from `serde-derive`
             pub use hsr::{Serialize, Deserialize};
@@ -696,10 +730,10 @@ pub fn prettify_code(input: String) -> Result<String> {
         let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
         session
             .format(rustfmt_nightly::Input::Text(input))
-            .map_err(|_e| Error::BadCodegen)?;
+            .map_err(|e| Error::BadCodegen(e.to_string()))?;
     }
     if buf.is_empty() {
-        return Err(Error::BadCodegen);
+        return Err(Error::BadCodegen("empty buffer".to_string()));
     }
     let mut s = String::from_utf8(buf).unwrap();
     // TODO no idea why this is necessary but... it is
@@ -728,41 +762,58 @@ mod tests {
     }
 
     #[test]
+    fn test_valid_identifier() {
+        assert!(Ident::from_str("x").is_ok());
+        assert!(Ident::from_str("_").is_ok());
+        assert!(Ident::from_str("x1").is_ok());
+        assert!(Ident::from_str("x1_23_aB").is_ok());
+
+        assert!(Ident::from_str("").is_err());
+        assert!(Ident::from_str("1abc").is_err());
+        assert!(Ident::from_str("abc!").is_err());
+    }
+
+    #[test]
     fn test_analyse_path() {
         use PathSegment::*;
 
         // Should fail
         assert!(RoutePath::analyse("").is_err());
-        assert!(RoutePath::analyse("a/b").is_err());
-        assert!(RoutePath::analyse("/a/b/c/").is_ok());
+        assert!(RoutePath::analyse("a").is_err());
+        assert!(RoutePath::analyse("/a/").is_err());
+        assert!(RoutePath::analyse("/a/b/c/").is_err());
         assert!(RoutePath::analyse("/a{").is_err());
         assert!(RoutePath::analyse("/a{}").is_err());
         assert!(RoutePath::analyse("/{}a").is_err());
         assert!(RoutePath::analyse("/{a}a").is_err());
         assert!(RoutePath::analyse("/ a").is_err());
+        assert!(RoutePath::analyse("/1").is_err());
+        assert!(RoutePath::analyse("/a//b").is_err());
 
-        // // TODO probably should succeed
-        assert!(RoutePath::analyse("/a1").is_ok());
-        // assert!(RoutePath::analyse("/{a1}").is_err());
+        assert!(RoutePath::analyse("/a").is_ok());
+        assert!(RoutePath::analyse("/a/b/c").is_ok());
+        assert!(RoutePath::analyse("/a/a/a").is_ok());
+        assert!(RoutePath::analyse("/a1/b2/c3").is_ok());
 
-        // // Should succeed
-        // assert_eq!(
-        //     RoutePath::analyse("/a/b").unwrap(),
-        //     vec![Literal("a".into()), Literal("b".into()),]
-        // );
-        // assert_eq!(
-        //     RoutePath::analyse("/{test}").unwrap(),
-        //     vec![Parameter("test".into())]
-        // );
-        // assert_eq!(
-        //     RoutePath::analyse("/{a}/{b}/a/b").unwrap(),
-        //     vec![
-        //         Parameter("a".into()),
-        //         Parameter("b".into()),
-        //         Literal("a".into()),
-        //         Literal("b".into())
-        //     ]
-        // );
+        assert!(RoutePath::analyse("/{a1}").is_ok());
+        assert!(RoutePath::analyse("/{a1}/b2/{c3}").is_ok());
+        assert!(RoutePath::analyse("/{a1B2c3}").is_ok());
+        assert!(RoutePath::analyse("/{a1_b2_c3}").is_ok());
+
+        // duplicate param
+        assert!(RoutePath::analyse("/{a}/{b}/{a}").is_err());
+
+        assert_eq!(
+            RoutePath::analyse("/{a_1}/{b2C3}/a/b").unwrap(),
+            RoutePath {
+                segments: vec![
+                    Parameter("a_1".into()),
+                    Parameter("b2C3".into()),
+                    Literal("a".into()),
+                    Literal("b".into())
+                ]
+            }
+        );
     }
 
     // #[test]

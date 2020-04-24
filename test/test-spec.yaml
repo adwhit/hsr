@@ -1,0 +1,179 @@
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Test
+servers:
+  - url: http://localhost:8000
+
+paths:
+  # Simplest possible route (?)
+  /status:
+    get:
+      operationId: get_status
+      responses:
+        '200':
+          description: "Ok"
+
+    post:
+      operationId: set_status
+      requestBody:
+        description: set status
+        required: false
+        content:
+          application/json:
+            schema:
+              nullable: true
+              type: string
+      responses:
+        '200':
+          description: "Ok"
+          content:
+            application/json:
+              schema:
+                nullable: true
+                type: string
+
+  /twoPathParams/{my_name}/{myAge}:
+    get:
+      summary: echo name and age
+      operationId: two_path_params
+      parameters:
+        - name: my_name
+          in: path
+          required: true
+          description: User name
+          schema:
+            type: string
+        - name: myAge
+          in: path
+          required: true
+          description: User age
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Hello
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
+  /twoQueryParams:
+    get:
+      summary: echo name and age
+      operationId: two_query_params
+      parameters:
+        - name: myName
+          in: query
+          required: true
+          description: User name
+          schema:
+            type: string
+        - name: my_age
+          in: query
+          required: false
+          description: User age
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Hello
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
+  /justDefault:
+    get:
+      operationId: just_default
+      responses:
+        default:
+          description: "Default"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hello"
+
+  /okErrorDefault:
+    get:
+      parameters:
+        - name: return_code
+          in: query
+          required: true
+          description: expected status code
+          schema:
+            type: integer
+      operationId: ok_error_default
+      responses:
+        '200':
+          description: "Ok"
+        '400':
+          description: "Not Ok"
+        default:
+          description: "Default"
+
+  /nestedResponseType:
+    get:
+      operationId: nestedResponse
+      responses:
+        '200':
+          description: "Ok"
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - first
+                properties:
+                  first:
+                    type: object
+                    required:
+                      - second
+                    properties:
+                      second:
+                        type: object
+
+
+components:
+  schemas:
+    # just a boring, normal, not interesting struct
+    Hello:
+      required:
+        - myName
+        - my_age
+      properties:
+        myName:
+          nullable: false
+          type: string
+        my_age:
+          nullable: true
+          type: integer
+
+    # test various combinations of nullable and required
+    NullableStruct:
+      # struct itself is nullable
+      nullable: true
+      required:
+        - this
+        - flooglezingle
+      properties:
+        # not nullable, required
+        this:
+          type: string
+        # not nullable, not required
+        that:
+          nullable: false
+          type: integer
+        other:
+        # nullable, not required
+          nullable: true
+          type: array
+          items:
+            type: string
+        # nullable, required
+        flooglezingle:
+          nullable: true
+          type: boolean
+
+    Anything:
+      type: any
