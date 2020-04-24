@@ -5,6 +5,7 @@ members = [
   "test",
   "examples/quickstart",
   "examples/petstore",
-  "examples/bench",
   "examples/petstore-expanded",
+  "examples/bench",
+  "examples/tutorial",
 ]

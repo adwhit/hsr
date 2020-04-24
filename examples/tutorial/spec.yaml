@@ -1,0 +1,15 @@
+# spec.yaml
+openapi: "3.0.0"
+info:
+  version: 0.0.1
+  title: hsr-tutorial
+servers:
+  - url: http://localhost:8000
+
+paths:
+  /hello:
+    get:
+      operationId: hello
+      responses:
+        '200':
+          description: Yes, we get it, hello
