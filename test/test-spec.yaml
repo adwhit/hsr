@@ -177,3 +177,28 @@ components:
 
     Anything:
       type: any
+
+    Combination:
+      allOf:
+        - $ref: '#/components/schemas/Hello'
+        - type: object
+          required:
+            - height
+          properties:
+            height:
+              type: number
+            favourite_colour:
+              type: string
+            feet_info:
+              required:
+                - number_of_toes
+                - webbed
+              properties:
+                number_of_toes:
+                  type: integer
+                eats_toenails:
+                  type: boolean
+                webbed:
+                  type: boolean
+                the_rest:
+                  $ref: '#/components/schemas/Anything'

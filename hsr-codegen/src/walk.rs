@@ -79,17 +79,9 @@ enum TypeInner {
 }
 
 impl TypeInner {
-    /// Attach metadata to
+    /// Attach metadata
     fn with_meta(self, meta: TypeMetadata) -> Type {
         Type { meta, typ: self }
-    }
-
-    /// Attach metadata to
-    fn no_meta(self) -> Type {
-        Type {
-            meta: TypeMetadata::default(),
-            typ: self,
-        }
     }
 }
 
@@ -97,7 +89,7 @@ impl TypeInner {
 struct Struct {
     // each field must carry some struct-specific metadata
     // (on top of metadata attached to the type)
-    fields: Vec<(Ident, FieldMetadata)>,
+    fields: Map<Ident, (FieldMetadata, TypePath)>,
 }
 
 impl Struct {
@@ -109,16 +101,18 @@ impl Struct {
         path: ApiPath,
         type_index: &mut TypeLookup,
     ) -> Result<Self> {
-        let mut fields = Vec::new();
+        let mut fields = Map::new();
         let required_args: Set<String> = obj.required().iter().cloned().collect();
         for (name, schemaref) in obj.properties() {
             let schemaref = schemaref.clone().unbox();
             let path = path.clone().push(name);
             let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
-            assert!(type_index.insert(type_path, ty.clone()).is_none());
+            assert!(type_index.insert(type_path.clone(), ty.clone()).is_none());
             let meta = FieldMetadata::default().required(required_args.contains(name));
-            fields.push((name.parse()?, meta));
+            if let Some(_) = fields.insert(name.parse()?, (meta, type_path)) {
+                invalid!("Duplicate field name: '{}'", name);
+            }
         }
         Ok(Self { fields })
     }
@@ -275,7 +269,8 @@ fn walk_operation(
                 }
                 let path = path.clone().push("path").push(&parameter_data.name);
                 let name: Ident = parameter_data.name.parse()?;
-                path_params.insert(name, TypePath::from(path.clone()));
+                let meta = FieldMetadata::default().required(parameter_data.required);
+                path_params.insert(name, (meta, TypePath::from(path.clone())));
                 match &parameter_data.format {
                     ParameterSchemaOrContent::Schema(schema) => {
                         let typ = build_type_recursive(&schema, path.clone(), type_index)?;
@@ -317,13 +312,10 @@ fn walk_operation(
     } else {
         // construct a path param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<(Ident, FieldMetadata)> = path_params
-            .keys()
-            .cloned()
-            .map(|v| (v, FieldMetadata::default().required(true)))
-            .collect();
-        let typ = TypeInner::Struct(Struct { fields })
-            .with_meta(TypeMetadata::default().visibility(Visibility::Private));
+        let typ = TypeInner::Struct(Struct {
+            fields: path_params.clone(),
+        })
+        .with_meta(TypeMetadata::default().visibility(Visibility::Private));
         let type_path = TypePath::from(path.clone().push("path"));
         let exists = type_index
             .insert(type_path.clone(), ReferenceOr::Item(typ))
@@ -337,12 +329,10 @@ fn walk_operation(
     } else {
         // construct a query param type, if any
         // This will be used as an Extractor in actix-web
-        let fields: Vec<(Ident, FieldMetadata)> = query_params
-            .iter()
-            .map(|(name, (meta, _path))| (name.clone(), meta.clone()))
-            .collect();
-        let typ = TypeInner::Struct(Struct { fields })
-            .with_meta(TypeMetadata::default().visibility(Visibility::Private));
+        let typ = TypeInner::Struct(Struct {
+            fields: query_params.clone(),
+        })
+        .with_meta(TypeMetadata::default().visibility(Visibility::Private));
         let type_path = TypePath::from(path.clone().push("query"));
         let exists = type_index
             .insert(type_path.clone(), ReferenceOr::Item(typ))
@@ -637,11 +627,7 @@ fn generate_rust_type(
                     let fields: Vec<TokenStream> = strukt
                         .fields
                         .iter()
-                        .map(|(field, meta)| {
-                            let path = ApiPath::from(type_path.clone());
-                            let field_type_path = TypePath::from(path.push(field.deref()));
-                            let field_type_name = field_type_path.canonicalize();
-
+                        .map(|(_field, (meta, field_type_path))| {
                             // Tricky bit. The field may be 'not required', from POV of the struct
                             // but also the type itself may be nullable. This is supposed to represent
                             // how in javascript an object key may be 'missing', or it may be 'null'
@@ -655,6 +641,7 @@ fn generate_rust_type(
                             let field_type = lookup_type_recursive(ref_or, lookup)?; // this one can
                             let required = meta.required;
                             let nullable = field_type.meta.nullable;
+                            let field_type_name = field_type_path.canonicalize();
                             let def = if nullable || (required && !nullable) {
                                 quote! {#field_type_name}
                             } else {
@@ -735,6 +722,8 @@ pub(crate) fn generate_enum_def(
 }
 
 fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Struct> {
+    // We do the combination in a simplistic way: assume parent types are structs,
+    // and add all the fields into a new struct. Reject duplicates
     let mut base = Map::new();
     for part in parts.iter() {
         let typ = lookup_type_recursive(part, lookup)?;
@@ -747,7 +736,7 @@ fn combine_types(parts: &[ReferenceOr<Type>], lookup: &TypeLookup) -> Result<Str
                     }
                 }
             }
-            _ => todo!(),
+            _ => todo!("Non-struct allOf combinations are not supported"),
         }
     }
     Ok(Struct {
