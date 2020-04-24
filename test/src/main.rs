@@ -67,7 +67,7 @@ fn nullable_struct() -> api::NullableStruct {
     })
 }
 
-fn combination() -> api::Combination {
+fn all_of_test() -> api::AllOfTest {
     let blob = serde_json::json!({
         "myName": "Alex",
         "height": 1.88,
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = client::Client::new(uri2);
     println!("Testing endpoints");
 
-    let _ = combination();
+    let _ = all_of_test();
 
     assert_eq!(client.get_status().await?, api::GetStatus::Ok);
 

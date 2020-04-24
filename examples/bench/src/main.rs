@@ -6,7 +6,6 @@ struct Api;
 
 #[hsr::async_trait::async_trait(?Send)]
 impl api::BenchmarkApi for Api {
-
     async fn basic_get(&self) -> api::BasicGet {
         api::BasicGet::Ok
     }

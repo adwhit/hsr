@@ -133,6 +133,21 @@ paths:
                       second:
                         type: object
 
+  /anythingGoes:
+    post:
+      operationId: anything_goes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OneOfTest'
+      responses:
+        '200':
+          description: "Ok"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OneOfTest'
 
 components:
   schemas:
@@ -178,7 +193,7 @@ components:
     Anything:
       type: any
 
-    Combination:
+    AllOfTest:
       allOf:
         - $ref: '#/components/schemas/Hello'
         - type: object
@@ -202,3 +217,18 @@ components:
                   type: boolean
                 the_rest:
                   $ref: '#/components/schemas/Anything'
+
+    OneOfTest:
+      oneOf:
+        - $ref: '#/components/schemas/Hello'
+        - $ref: '#/components/schemas/NullableStruct'
+        - $ref: '#/components/schemas/AllOfTest'
+        - type: array
+          items:
+            required:
+              - x
+            properties:
+              x:
+                type: number
+              y:
+                type: string
