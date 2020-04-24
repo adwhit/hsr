@@ -47,6 +47,10 @@ impl TestApi for Api {
             },
         })
     }
+
+    async fn anything_goes(&self, one_of: api::OneOfTest) -> api::AnythingGoes {
+        api::AnythingGoes::Ok(one_of)
+    }
 }
 
 // Quickly generate some data
@@ -169,6 +173,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
         );
+    }
+
+    {
+        // TODO I doubt this is being serialized properly. Need to send as 'untagged'
+        let payload = api::OneOfTest::OneOfTestOneOf0(hello());
+        let body = client.anything_goes(payload.clone()).await?;
+        assert_eq!(body, api::AnythingGoes::Ok(payload));
     }
 
     println!("Success");

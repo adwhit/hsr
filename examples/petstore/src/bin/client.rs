@@ -3,7 +3,8 @@ use std::error::Error;
 use hsr::futures::TryFutureExt;
 use petstore::{api, client::Client, NewPet};
 
-// Run the client via a CLI
+// This CLI uses the auto-generated API client to test various server endpoints
+
 #[actix_rt::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
