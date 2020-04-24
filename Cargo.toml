@@ -2,9 +2,9 @@
 members = [
   "hsr",
   "hsr-codegen",
+  "test",
   "examples/quickstart",
   "examples/petstore",
   "examples/bench",
-  "test"
-  # "examples/petstore-expanded",
+  "examples/petstore-expanded",
 ]

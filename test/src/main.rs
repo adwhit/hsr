@@ -67,6 +67,19 @@ fn nullable_struct() -> api::NullableStruct {
     })
 }
 
+fn combination() -> api::Combination {
+    let blob = serde_json::json!({
+        "myName": "Alex",
+        "height": 1.88,
+        "feet_info": {
+            "number_of_toes": 6,
+            "webbed": true,
+            "the_rest": "blah blah blah blah"
+        }
+    });
+    serde_json::from_value(blob).unwrap()
+}
+
 // TODO make this into a 'normal' rust test suite not just a big main function
 
 #[actix_rt::main]
@@ -87,6 +100,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = client::Client::new(uri2);
     println!("Testing endpoints");
+
+    let _ = combination();
 
     assert_eq!(client.get_status().await?, api::GetStatus::Ok);
 

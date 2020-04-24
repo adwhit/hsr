@@ -21,7 +21,7 @@ pub(crate) struct Route {
     operation_id: Ident,
     method: Method,
     path: RoutePath,
-    path_params: Option<(TypePath, Map<Ident, TypePath>)>,
+    path_params: Option<(TypePath, Map<Ident, (FieldMetadata, TypePath)>)>,
     query_params: Option<(TypePath, Map<Ident, (FieldMetadata, TypePath)>)>,
     return_types: Map<StatusCode, Option<TypePath>>,
     default_return_type: DefaultResponse,
@@ -155,8 +155,13 @@ impl Route {
             .map(|(_, params)| {
                 params
                     .iter()
-                    .map(|(id, ty)| (id, ty.canonicalize()))
-                    .map(|(id, ty)| quote! { #id: #ty })
+                    .map(|(id, (meta, ty))| {
+                        assert!(meta.required, "path params are always required");
+                        let type_name = ty.canonicalize();
+                        quote! {
+                            #id: #type_name
+                        }
+                    })
                     .collect()
             })
             .unwrap_or(Vec::new());
@@ -212,7 +217,7 @@ impl Route {
             .map(|(_, params)| {
                 params
                     .iter()
-                    .map(|(id, ty)| (id, ty.canonicalize()))
+                    .map(|(id, (_meta, ty))| (id, ty.canonicalize()))
                     .unzip()
             })
             .unwrap_or((Vec::new(), Vec::new()));

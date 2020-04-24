@@ -4,12 +4,6 @@ struct Api;
 
 #[hsr::async_trait::async_trait(?Send)]
 impl QuickstartApi for Api {
-    type Error = hsr::ServerError;
-
-    fn new(_url: hsr::Url) -> Self {
-        Api
-    }
-
     async fn greet(&self, name: String) -> Greet {
         Greet::Ok(Hello {
             name,
@@ -28,7 +22,7 @@ async fn main() {
     std::thread::spawn(move || {
         println!("Serving at '{}'", uri);
         let mut system = hsr::actix_rt::System::new("main");
-        let server = server::serve::<Api>(hsr::Config::with_host(uri));
+        let server = server::serve(Api, hsr::Config::with_host(uri));
         system.block_on(server).unwrap();
     });
 

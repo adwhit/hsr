@@ -15,4 +15,4 @@ rand = "0.7.0"
 env_logger = "0.6.2"
 
 [features]
-rustfmt = ["hsr-codegen/rustfmt"]
+pretty = ["hsr-codegen/pretty"]

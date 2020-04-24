@@ -428,10 +428,6 @@ pub(crate) struct TypeMetadata {
 }
 
 impl TypeMetadata {
-    fn nullable(self, nullable: bool) -> Self {
-        Self { nullable, ..self }
-    }
-
     fn visibility(self, visibility: Visibility) -> Self {
         Self { visibility, ..self }
     }
@@ -474,7 +470,7 @@ fn doc_comment(msg: impl AsRef<str>) -> TokenStream {
 
 fn get_derive_tokens() -> TokenStream {
     quote! {
-        # [derive(Debug, Clone, PartialEq, PartialOrd, hsr::Serialize, hsr::Deserialize)]
+        # [derive(Debug, Clone, PartialEq, hsr::Serialize, hsr::Deserialize)]
     }
 }
 
@@ -708,19 +704,19 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
         #rust_client
     };
     let code = code.to_string();
-    #[cfg(feature = "rustfmt")]
+    #[cfg(feature = "pretty")]
     {
         debug!("Prettify");
         prettify_code(code)
     }
-    #[cfg(not(feature = "rustfmt"))]
+    #[cfg(not(feature = "pretty"))]
     {
         Ok(code)
     }
 }
 
 /// Run the code through `rustfmt`.
-#[cfg(feature = "rustfmt")]
+#[cfg(feature = "pretty")]
 pub fn prettify_code(input: String) -> Result<String> {
     let mut buf = Vec::new();
     {
