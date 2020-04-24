@@ -687,6 +687,7 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::url::Url;
             pub use hsr::actix_http::http::{StatusCode};
             pub use hsr::futures::future::{Future, FutureExt, TryFutureExt, Ready, ok as fut_ok};
+            pub use hsr::serde_json::Value as JsonValue;
 
             // macros re-exported from `serde-derive`
             pub use hsr::{Serialize, Deserialize};

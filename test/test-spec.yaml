@@ -136,6 +136,7 @@ paths:
 
 components:
   schemas:
+    # just a boring, normal, not interesting struct
     Hello:
       required:
         - myName
@@ -148,19 +149,31 @@ components:
           nullable: true
           type: integer
 
+    # test various combinations of nullable and required
     NullableStruct:
+      # struct itself is nullable
       nullable: true
       required:
-        - that
+        - this
+        - flooglezingle
       properties:
+        # not nullable, required
         this:
-          nullable: true
           type: string
+        # not nullable, not required
         that:
           nullable: false
           type: integer
         other:
-          nullable: false
+        # nullable, not required
+          nullable: true
           type: array
           items:
             type: string
+        # nullable, required
+        flooglezingle:
+          nullable: true
+          type: boolean
+
+    Anything:
+      type: any

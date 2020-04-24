@@ -18,7 +18,6 @@ impl Pet {
 pub enum InternalError {
     BadConnection,
     ParseFailure,
-    ServerHasExploded,
 }
 
 type ApiResult<T> = std::result::Result<T, InternalError>;
@@ -72,11 +71,7 @@ impl Api {
     }
 
     fn server_health_check(&self) -> ApiResult<()> {
-        if rand::random::<f32>() > 0.99 {
-            Err(InternalError::ServerHasExploded)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
@@ -89,42 +84,65 @@ impl Api {
 // not compile).
 #[hsr::async_trait::async_trait(?Send)]
 impl PetstoreApi for Api {
-    // TODO all these i64s should be u64s
     async fn get_all_pets(&self, limit: i64, filter: Option<String>) -> api::GetAllPets {
-        todo!()
-        // let regex = if let Some(filter) = filter {
-        //     Regex::new(&filter).map_err(|_| GetAllPetsError::BadRequest)?
-        // } else {
-        //     Regex::new(".?").unwrap()
-        // };
-        // let pets = self.all_pets().await?;
-        // Ok(pets
-        //     .into_iter()
-        //     .take(limit as usize)
-        //     .filter(|p| regex.is_match(&p.name))
-        //     .collect())
+        let regex = if let Some(filter) = filter {
+            match Regex::new(&filter) {
+                Ok(re) => re,
+                Err(_) => return api::GetAllPets::BadRequest,
+            }
+        } else {
+            Regex::new(".?").unwrap()
+        };
+        let pets = match self.all_pets().await {
+            Ok(p) => p,
+            Err(_) => return api::GetAllPets::BadRequest,
+        };
+        api::GetAllPets::Ok(
+            pets.into_iter()
+                .take(limit as usize)
+                .filter(|p| regex.is_match(&p.name))
+                .collect(),
+        )
     }
 
     async fn create_pet(&self, new_pet: NewPet) -> api::CreatePet {
-        todo!()
-        // let () = self.server_health_check()?;
-        // let _ = self.add_pet(new_pet).await?; // TODO return usize
-        // Ok(hsr::Success)
+        let res: ApiResult<()> = async {
+            let () = self.server_health_check()?;
+            let _ = self.add_pet(new_pet).await?; // TODO return usize
+            Ok(())
+        }
+        .await;
+        match res {
+            Ok(()) => api::CreatePet::Created,
+            Err(_) => api::CreatePet::Forbidden,
+        }
     }
 
     async fn get_pet(&self, pet_id: i64) -> api::GetPet {
-        // TODO This is how we would like it to work
-        // self.lookup_pet(pet_id as usize)
-        //     .await?
-        //     .ok_or_else(|| GetPetError::NotFound)
-        todo!()
+        match self.lookup_pet(pet_id as usize).await {
+            Ok(Some(pet)) => api::GetPet::Ok(pet),
+            Ok(None) => api::GetPet::NotFound,
+            Err(_) => api::GetPet::Default {
+                status_code: 500,
+                body: api::Error {
+                    code: 12345,
+                    message: "Something went wrong".into(),
+                },
+            },
+        }
     }
 
     async fn delete_pet(&self, pet_id: i64) -> api::DeletePet {
-        todo!()
-        // self.remove_pet(pet_id as usize)
-        //     .await?
-        //     .map(|_| hsr::Success)
-        //     .ok_or_else(|| DeletePetError::NotFound)
+        match self.remove_pet(pet_id as usize).await {
+            Ok(Some(_)) => api::DeletePet::NoContent,
+            Ok(None) => api::DeletePet::NotFound,
+            Err(_) => api::DeletePet::Default {
+                status_code: 500,
+                body: api::Error {
+                    code: 12345,
+                    message: "Something went wrong".into(),
+                },
+            },
+        }
     }
 }

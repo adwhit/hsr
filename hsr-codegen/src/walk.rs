@@ -590,7 +590,7 @@ fn generate_rust_type(
                     quote! {
                         #descr
                         // could be 'any' valid json
-                        type #name = serde_json::Value;
+                        type #name = JsonValue;
                     }
                 }
                 T::AllOf(parts) => {

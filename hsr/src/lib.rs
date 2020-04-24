@@ -14,6 +14,7 @@ pub use actix_web;
 pub use async_trait;
 pub use awc;
 pub use futures;
+pub use serde_json;
 pub use serde_urlencoded;
 pub use url;
 

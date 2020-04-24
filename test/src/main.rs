@@ -57,11 +57,13 @@ fn hello() -> api::Hello {
     }
 }
 
+#[allow(dead_code)]
 fn nullable_struct() -> api::NullableStruct {
     Some(api::NullableStructOpt {
-        this: Some("string".into()),
-        that: 123,
+        this: "string".into(),
+        that: Some(123),
         other: Some(vec!["string".into()]),
+        flooglezingle: Some(true),
     })
 }
 

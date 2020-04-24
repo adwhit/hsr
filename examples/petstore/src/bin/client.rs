@@ -1,13 +1,11 @@
+use std::error::Error;
+
 use hsr::futures::TryFutureExt;
-use petstore::{
-    api::{DeletePetError, GetPetError},
-    client::Client,
-    NewPet, PetstoreApi,
-};
+use petstore::{api, client::Client, NewPet};
 
 // Run the client via a CLI
 #[actix_rt::main]
-async fn main() -> Result<(), String> {
+async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let client = Client::new("http://localhost:8000".parse().unwrap());
     run(&client).await
@@ -17,7 +15,7 @@ fn dbg(v: impl std::fmt::Debug) -> String {
     format!("{:?}", v)
 }
 
-async fn run(client: &Client) -> Result<(), String> {
+async fn run(client: &Client) -> Result<(), Box<dyn Error>> {
     // Create two pets
     let pet1 = NewPet {
         name: "Alex the Goat".into(),
@@ -41,7 +39,7 @@ async fn run(client: &Client) -> Result<(), String> {
 
     // Fetch a pet that doesn't exist
     // Note the custom return error
-    if let Err(GetPetError::NotFound) = client.get_pet(500).await {
+    if let api::GetPet::NotFound = client.get_pet(500).await? {
         ()
     } else {
         panic!("Not not found")
@@ -50,7 +48,7 @@ async fn run(client: &Client) -> Result<(), String> {
     // Empty the DB
     let _ = client.delete_pet(0).map_err(dbg).await?;
     let _ = client.delete_pet(0).map_err(dbg).await?;
-    if let Err(DeletePetError::NotFound) = client.delete_pet(0).await {
+    if let api::DeletePet::NotFound = client.delete_pet(0).await? {
         ()
     } else {
         panic!("Not not found")
