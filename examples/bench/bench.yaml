@@ -6,15 +6,15 @@ servers:
   - url: http://localhost:8000
 
 paths:
-  /:
+  /bench:
     get:
-      operationId: basicGet
+      operationId: basic_get
       responses:
         '200':
           description: Simple get
 
     post:
-      operationId: basicPost
+      operationId: basic_post
       requestBody:
         required: true
         content:

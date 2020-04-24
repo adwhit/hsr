@@ -73,7 +73,8 @@ fn combination() -> api::Combination {
         "height": 1.88,
         "feet_info": {
             "number_of_toes": 6,
-            "webbed": true
+            "webbed": true,
+            "the_rest": "blah blah blah blah"
         }
     });
     serde_json::from_value(blob).unwrap()

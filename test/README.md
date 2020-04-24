@@ -1,9 +1,11 @@
-## Quickstart
+## Test
 
-This is a very bare-bones server/client, defined in the spec `quickstart.yaml`.
+This spec and the accompanying code attempt to check the various aspects of
+code generation and execution. Generally, if a bug is found, a regression
+test for it should be added here.
 
-Execute `cargo run` to launch a basic demo.
+## Run
 
-It will start a simple server in one thread, access it through a client, print the result and exit.
-
-Amazed, impressed? Then, take a look at the code!
+``` sh
+cargo run
+```
