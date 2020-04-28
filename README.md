@@ -7,16 +7,21 @@ Build fast HTTP apis fast, with Rust, and [OpenAPI](https://swagger.io/docs/spec
  * Implement your interface (simple, safe, strongly typed!)
  * Run! 'If it compiles, it works!'
 
+## Docs
 
-## Quickstart
+### Quickstart
 
 Take a look at the [quickstart example](examples/quickstart). It contains the
 minimum boilerplate needed to get up and running.
 
-## Less Quick Start
+### Tutorial
 
-Take a look at the [petstore example](examples/petstore) for a more in-depth example
-showcasing a 'database' backend.
+Read the [tutorial](examples/tutorial) for a step-by-step guide to get up and running.
+
+### Less Quick Start
+
+Take a look at the [petstore example](examples/petstore) for a more complex example
+with a 'database' backend.
 
 ## Features
 

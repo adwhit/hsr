@@ -13,3 +13,43 @@ paths:
       responses:
         '200':
           description: Yes, we get it, hello
+
+  /greet/{name}:
+    get:
+      operationId: greet
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: obsequiousness_level
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: If you can't say something nice...
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - greeting
+                properties:
+                  greeting:
+                    type: string
+                  lay_it_on_thick:
+                    type: object
+                    required:
+                      - is_wonderful_person
+                      - is_kind_to_animals
+                      - would_take_to_meet_family
+                    properties:
+                      is_wonderful_person:
+                        type: boolean
+                      is_kind_to_animals:
+                        type: boolean
+                      would_take_to_meet_family:
+                        type: boolean

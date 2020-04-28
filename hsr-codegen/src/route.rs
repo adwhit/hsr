@@ -398,7 +398,7 @@ impl Route {
                     let #name { #(#path_param_fields),* } = path.into_inner();
                 };
                 let path_arg = quote! {
-                    path: AxPath<#name>
+                    path: AxPath<#name>,
                 };
                 (Some(path_arg), Some(path_destructure))
             })
@@ -419,7 +419,7 @@ impl Route {
                     let #name { #(#query_param_fields),* } = query.into_inner();
                 };
                 let query_arg = quote! {
-                    query: AxQuery<#name>
+                    query: AxQuery<#name>,
                 };
                 (Some(query_arg), Some(query_destructure))
             })
