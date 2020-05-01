@@ -15,12 +15,13 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, get_derive_tokens,
-    route::{validate_routes, Route},
-    unwrap_ref, variant_from_status_code, ApiPath, Error, FieldMetadata, Ident, Method,
-    MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode,
-    TypeMetadata, TypeName, TypePath, Visibility,
+    dereference, doc_comment, get_derive_tokens, unwrap_ref, variant_from_status_code, ApiPath,
+    Error, FieldMetadata, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result,
+    RoutePath, SchemaLookup, StatusCode, TypeMetadata, TypeName, TypePath, Visibility,
 };
+
+use crate::route::{validate_routes, Response, Responses, Route};
+
 use proc_macro2::Ident as QIdent;
 
 pub(crate) type TypeLookup = BTreeMap<TypePath, ReferenceOr<Type>>;
@@ -63,6 +64,14 @@ enum Primitive {
     I64,
     #[display(fmt = "bool")]
     Bool,
+}
+
+/// Represent a variant of an enum
+#[derive(Debug, Clone, derive_more::Constructor)]
+pub(crate) struct Variant {
+    pub name: Ident,
+    pub description: Option<String>,
+    pub type_path: Option<TypePath>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +118,7 @@ impl Struct {
             let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
             assert!(type_index.insert(type_path.clone(), ty.clone()).is_none());
-            let meta = FieldMetadata::default().required(required_args.contains(name));
+            let meta = FieldMetadata::default().with_required(required_args.contains(name));
             if let Some(_) = fields.insert(name.parse()?, (meta, type_path)) {
                 invalid!("Duplicate field name: '{}'", name);
             }
@@ -269,7 +278,7 @@ fn walk_operation(
                 }
                 let path = path.clone().push($path).push(&parameter_data.name);
                 let name: Ident = parameter_data.name.parse()?;
-                let meta = FieldMetadata::default().required(parameter_data.required);
+                let meta = FieldMetadata::default().with_required(parameter_data.required);
                 $params.insert(name, (meta, TypePath::from(path.clone())));
                 match &parameter_data.format {
                     ParameterSchemaOrContent::Schema(schema) => {
@@ -319,7 +328,7 @@ fn walk_operation(
                 let typ = TypeInner::Struct(Struct {
                     fields: $params.clone(),
                 })
-                .with_meta(TypeMetadata::default().visibility(Visibility::Private));
+                .with_meta(TypeMetadata::default().with_visibility(Visibility::Private));
                 let type_path = TypePath::from(path.clone().push($path));
                 let exists = type_index
                     .insert(type_path.clone(), ReferenceOr::Item(typ))
@@ -347,7 +356,7 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let (return_types, default_return_type) = walk_responses(
+    let responses = walk_responses(
         &op.responses,
         path.push("responses"),
         type_index,
@@ -356,13 +365,13 @@ fn walk_operation(
 
     let route = Route::new(
         op.summary.clone(),
+        op.description.clone(),
         operation_id,
         method,
         route_path.clone(),
         path_params,
         query_params,
-        return_types,
-        default_return_type,
+        responses,
     );
 
     Ok(route)
@@ -394,20 +403,13 @@ fn walk_contents(
         .transpose()
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum DefaultResponse {
-    None,
-    Anonymous,
-    Typed(TypePath),
-}
-
 fn walk_responses(
     resps: &openapiv3::Responses,
     path: ApiPath,
     type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<(Map<StatusCode, Option<TypePath>>, DefaultResponse)> {
-    let response_tys: Map<StatusCode, Option<TypePath>> = resps
+) -> Result<Responses> {
+    let with_codes: Map<StatusCode, Response> = resps
         .responses
         .iter()
         .map(|(code, resp)| {
@@ -421,35 +423,38 @@ fn walk_responses(
         })
         .collect::<Result<_>>()?;
 
-    let dflt_ty = resps
+    let default = resps
         .default
         .as_ref()
-        .map::<Result<DefaultResponse>, _>(|dflt| {
+        .map::<Result<Response>, _>(|dflt| {
             let resp = dereference(dflt, &components.responses)?;
             let path = path.clone().push("default");
-            let dflt = walk_response(&resp, path, type_index)?
-                .map(|path| DefaultResponse::Typed(path))
-                .unwrap_or(DefaultResponse::Anonymous);
-            Ok(dflt)
+            walk_response(&resp, path, type_index)
         })
-        .transpose()?
-        .unwrap_or(DefaultResponse::None);
+        .transpose()?;
 
-    Ok((response_tys, dflt_ty))
+    Ok(Responses {
+        with_codes,
+        default,
+    })
 }
 
 fn walk_response(
     resp: &openapiv3::Response,
     path: ApiPath,
     type_index: &mut TypeLookup,
-) -> Result<Option<TypePath>> {
+) -> Result<Response> {
     if !resp.headers.is_empty() {
         todo!("response headers not supported")
     }
     if !resp.links.is_empty() {
         todo!("response links not supported")
     }
-    walk_contents(&resp.content, path, type_index)
+    let type_path = walk_contents(&resp.content, path, type_index)?;
+    Ok(Response {
+        type_path,
+        description: resp.description.clone(),
+    })
 }
 
 /// Build a type from a schema definition
@@ -595,9 +600,13 @@ fn generate_rust_type(
                 T::OneOf(variants) => {
                     let variants: Vec<_> = variants
                         .iter()
-                        .map(|var| (var.canonicalize(), Some(var.clone())))
+                        .map(|var| Variant {
+                            name: var.canonicalize().to_string().parse().unwrap(),
+                            type_path: Some(var.clone()),
+                            description: None,
+                        })
                         .collect();
-                    generate_enum_def(&name, &variants, &DefaultResponse::None)
+                    generate_enum_def(&name, &typ.meta, &variants, None)
                 }
                 T::Primitive(p) => {
                     let id = crate::ident(p);
@@ -705,42 +714,61 @@ fn generate_struct_def(
     Ok(tokens)
 }
 
-/// If there are multitple difference error types, construct an
+/// TODO If there are multiple different error types, construct an
 /// enum to hold them all. If there is only one or none, don't bother.
 pub(crate) fn generate_enum_def(
     name: &TypeName,
-    variants_info: &[(TypeName, Option<TypePath>)],
-    dflt: &DefaultResponse,
+    meta: &TypeMetadata,
+    variants_info: &[Variant],
+    dflt: Option<&Variant>,
 ) -> TokenStream {
     let mut variants = vec![];
-    for (variant_name, variant_type_path_opt) in variants_info {
-        match variant_type_path_opt.as_ref() {
+    for Variant {
+        name,
+        description,
+        type_path,
+    } in variants_info
+    {
+        let descr = description.as_ref().map(doc_comment);
+        match type_path.as_ref() {
             Some(path) => {
                 let varty = path.canonicalize();
-                variants.push(quote! { #variant_name(#varty) });
+                variants.push(quote! {
+                    #descr
+                    #name(#varty)
+                });
             }
             None => {
-                variants.push(quote! { #variant_name });
+                variants.push(quote! {
+                    #descr
+                    #name
+                });
             }
         }
     }
-    match dflt {
-        DefaultResponse::None => {}
-        DefaultResponse::Anonymous => variants.push(quote! {Default { status_code: u16 }}),
-        DefaultResponse::Typed(path) => {
-            let varty = path.canonicalize();
-            variants.push(quote! {
-                Default {
-                    status_code: u16,
-                    body: #varty
-                }
-            })
+    if let Some(variant) = dflt {
+        let docs = variant.description.as_ref().map(doc_comment);
+        match &variant.type_path {
+            None => variants.push(quote! {Default { status_code: u16 }}),
+            Some(path) => {
+                let varty = path.canonicalize();
+                variants.push(quote! {
+                    #docs
+                    Default {
+                        status_code: u16,
+                        body: #varty
+                    }
+                })
+            }
         }
-    }
+    };
     let derives = get_derive_tokens();
+    let visibility = meta.visibility;
+    let descr = meta.description();
     quote! {
+        #descr
         #derives
-        pub enum #name {
+        #visibility enum #name {
             #(#variants,)*
         }
     }

@@ -15,9 +15,11 @@ paths:
           description: "Ok"
 
     post:
+      summary: Set The Status
+      description: I guess we are setting some kind of status
       operationId: set_status
       requestBody:
-        description: set status
+        description: set status body
         required: false
         content:
           application/json:
@@ -26,7 +28,7 @@ paths:
               type: string
       responses:
         '200':
-          description: "Ok"
+          description: "Things are OK"
           content:
             application/json:
               schema:
@@ -52,7 +54,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Hello
+          description: Hello 200 response
           content:
             application/json:
               schema:

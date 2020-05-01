@@ -9,8 +9,21 @@ use std::convert::TryFrom;
 use std::hash::Hash;
 use std::ops::Deref;
 
-use crate::walk::{generate_enum_def, DefaultResponse, Type};
+use crate::walk::{generate_enum_def, Type, Variant};
 use crate::*;
+
+// Just the bits of the Responses that the Route needs to know about
+#[derive(Debug, Clone)]
+pub(crate) struct Responses {
+    pub with_codes: Map<StatusCode, Response>,
+    pub default: Option<Response>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Response {
+    pub description: String,
+    pub type_path: Option<TypePath>,
+}
 
 /// Route contains all the information necessary to contruct the API
 ///
@@ -18,13 +31,13 @@ use crate::*;
 #[derive(Debug, Clone, derive_more::Constructor)]
 pub(crate) struct Route {
     summary: Option<String>,
+    description: Option<String>,
     operation_id: Ident,
     method: Method,
     path: RoutePath,
     path_params: Option<(TypePath, Map<Ident, (FieldMetadata, TypePath)>)>,
     query_params: Option<(TypePath, Map<Ident, (FieldMetadata, TypePath)>)>,
-    return_types: Map<StatusCode, Option<TypePath>>,
-    default_return_type: DefaultResponse,
+    responses: Responses,
 }
 
 impl Route {
@@ -40,25 +53,51 @@ impl Route {
         TypeName::from_str(&self.operation_id.deref().to_camel_case()).unwrap()
     }
 
+    fn documentation(&self) -> TokenStream {
+        let summary = self.summary.as_ref().map(doc_comment);
+        let descr = self.description.as_ref().map(doc_comment);
+        quote! {
+            #summary
+            #descr
+        }
+    }
+
     /// The name of the return type. If none are found, returns '()'.
     /// If both Success and Error types exist, will be a Result type
     pub(crate) fn generate_return_type(&self) -> TokenStream {
         let enum_name = self.return_ty_name();
-        let variant_pairs: Vec<(TypeName, Option<TypePath>)> = self
-            .return_types
+        let variants: Vec<_> = self
+            .responses
+            .with_codes
             .iter()
-            .map(|(code, path)| (variant_from_status_code(code), path.clone()))
+            .map(|(code, resp)| {
+                Variant::new(
+                    variant_from_status_code(code),
+                    Some(resp.description.clone()),
+                    resp.type_path.clone(),
+                )
+            })
             .collect();
-        let enum_def = generate_enum_def(&enum_name, &variant_pairs, &self.default_return_type);
+        let default_variant = self.responses.default.as_ref().map(|dflt| {
+            Variant::new(
+                "Default".parse().unwrap(),
+                Some(dflt.description.clone()),
+                dflt.type_path.clone(),
+            )
+        });
+        let meta = TypeMetadata::default()
+            .with_description(format!("Returned from operation '{}'", self.operation_id));
+        let enum_def = generate_enum_def(&enum_name, &meta, &variants, default_variant.as_ref());
 
         let status_matches = {
             let mut status_matches: Vec<_> = self
-                .return_types
+                .responses
+                .with_codes
                 .iter()
-                .map(|(code, type_path_opt)| {
+                .map(|(code, response)| {
                     let var_name = variant_from_status_code(code);
                     let code_lit = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
-                    match type_path_opt {
+                    match response.type_path {
                         Some(_) => quote! {
                             #var_name(_) => StatusCode::from_u16(#code_lit).unwrap()
                         },
@@ -68,9 +107,8 @@ impl Route {
                     }
                 })
                 .collect();
-            match &self.default_return_type {
-                DefaultResponse::None => {}
-                DefaultResponse::Anonymous | DefaultResponse::Typed(_) => status_matches.push(
+            if let Some(_) = self.responses.default.as_ref() {
+                status_matches.push(
                     // TODO print warning on bad code
                     quote! {
                         Default { status_code, .. } => {
@@ -78,40 +116,45 @@ impl Route {
                                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
                         }
                     },
-                ),
+                )
             }
             status_matches
         };
 
         let response_match_arms = {
-            let mut response_match_arms: Vec<_> = variant_pairs
+            let mut response_match_arms: Vec<_> = variants
                 .iter()
-                .map(|(typename, typepath_opt)| match typepath_opt {
-                    Some(_) => {
-                        quote! {
-                            #typename(inner) => {
-                                HttpResponseBuilder::new(status_code).json(inner)
+                .map(
+                    |Variant {
+                         name, type_path, ..
+                     }| match type_path {
+                        Some(_) => {
+                            quote! {
+                                #name(inner) => {
+                                    HttpResponseBuilder::new(status_code).json(inner)
+                                }
                             }
                         }
-                    }
-                    None => {
-                        quote! {
-                            #typename => {
-                                HttpResponseBuilder::new(status_code).finish()
+                        None => {
+                            quote! {
+                                #name => {
+                                    HttpResponseBuilder::new(status_code).finish()
+                                }
                             }
                         }
-                    }
-                })
+                    },
+                )
                 .collect();
-            match &self.default_return_type {
-                DefaultResponse::None => {}
-                DefaultResponse::Anonymous => response_match_arms.push(quote! {
-                    Default { .. } => HttpResponseBuilder::new(status_code).finish()
-                }),
-                DefaultResponse::Typed(_) => response_match_arms.push(quote! {
-                    Default { body, .. } => HttpResponseBuilder::new(status_code).json(body)
-                }),
-            };
+            if let Some(dflt) = &self.responses.default {
+                match dflt.type_path {
+                    None => response_match_arms.push(quote! {
+                        Default { .. } => HttpResponseBuilder::new(status_code).finish()
+                    }),
+                    Some(_) => response_match_arms.push(quote! {
+                        Default { body, .. } => HttpResponseBuilder::new(status_code).json(body)
+                    }),
+                }
+            }
             response_match_arms
         };
 
@@ -193,7 +236,7 @@ impl Route {
             let name = ident("payload");
             Some(quote! { #name: #body_ty, })
         });
-        let docs = self.summary.as_ref().map(doc_comment);
+        let docs = self.documentation();
         // define the trait method which the user must implement
         quote! {
             #docs
@@ -280,12 +323,13 @@ impl Route {
         // Build up the match arms that will do so
         let resp_match_arms = {
             let mut resp_match_arms: Vec<_> = self
-                .return_types
+                .responses
+                .with_codes
                 .iter()
-                .map(|(code, type_path)| {
+                .map(|(code, response)| {
                     let status_code_literal = proc_macro2::Literal::u16_unsuffixed(code.as_u16());
                     let variant = variant_from_status_code(code);
-                    match type_path {
+                    match &response.type_path {
                         Some(type_path) => {
                             // there is a payload associated with the response type
                             // so attempt to deserialize it
@@ -317,26 +361,28 @@ impl Route {
 
             // we have done the 'expected' matches. Now, what if we get an unknown status code?
             // Depends on whether we have a 'default' response
-            let fallthough_match = match &self.default_return_type {
-                DefaultResponse::None => quote! {
+            let fallthough_match = match &self.responses.default {
+                None => quote! {
                     _ => Result::Err(ClientError::BadStatus(resp.status()))
                 },
-                DefaultResponse::Anonymous => quote! {
-                    status_code => Result::Ok(#result_type::Default { status_code })
-                },
-                DefaultResponse::Typed(type_path) => {
-                    let type_name = type_path.canonicalize();
-                    quote! {
-                        status_code => {
-                            match resp
-                                .json::<#type_name>()
-                                .await {
-                                    Ok(body) => Result::Ok(#result_type::Default { status_code, body }),
-                                    Err(e) => Result::Err(ClientError::Actix(e.into()))
-                                }
+                Some(dflt) => match &dflt.type_path {
+                    None => quote! {
+                        status_code => Result::Ok(#result_type::Default { status_code })
+                    },
+                    Some(type_path) => {
+                        let type_name = type_path.canonicalize();
+                        quote! {
+                            status_code => {
+                                match resp
+                                    .json::<#type_name>()
+                                    .await {
+                                        Ok(body) => Result::Ok(#result_type::Default { status_code, body }),
+                                        Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                    }
+                            }
                         }
                     }
-                }
+                },
             };
             resp_match_arms.push(fallthough_match);
             resp_match_arms

@@ -428,8 +428,15 @@ pub(crate) struct TypeMetadata {
 }
 
 impl TypeMetadata {
-    fn visibility(self, visibility: Visibility) -> Self {
+    fn with_visibility(self, visibility: Visibility) -> Self {
         Self { visibility, ..self }
+    }
+
+    fn with_description(self, description: String) -> Self {
+        Self {
+            description: Some(description),
+            ..self
+        }
     }
 
     fn description(&self) -> Option<TokenStream> {
@@ -458,12 +465,12 @@ pub(crate) struct FieldMetadata {
 }
 
 impl FieldMetadata {
-    fn required(self, required: bool) -> Self {
+    fn with_required(self, required: bool) -> Self {
         Self { required, ..self }
     }
 }
 
-pub(crate) fn variant_from_status_code(code: &StatusCode) -> TypeName {
+pub(crate) fn variant_from_status_code(code: &StatusCode) -> Ident {
     code.canonical_reason()
         .and_then(|reason| reason.to_camel_case().parse().ok())
         .unwrap_or_else(|| format!("Status{}", code.as_str()).parse().unwrap())

@@ -23,7 +23,7 @@ impl api::HsrTutorialApi for Api {
         };
         api::Greet::Ok(api::GreetOk {
             greeting: format!("Greetings {}, pleased to meet you", name),
-            lay_it_on_thick
+            lay_it_on_thick,
         })
     }
 }
