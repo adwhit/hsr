@@ -431,6 +431,14 @@ impl TypeMetadata {
     fn visibility(self, visibility: Visibility) -> Self {
         Self { visibility, ..self }
     }
+
+    fn description(&self) -> Option<TokenStream> {
+        self.description.as_ref().map(|s| {
+            quote! {
+                #[doc = #s]
+            }
+        })
+    }
 }
 
 impl From<openapiv3::SchemaData> for TypeMetadata {
