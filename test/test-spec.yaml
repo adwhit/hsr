@@ -153,6 +153,7 @@ components:
   schemas:
     # just a boring, normal, not interesting struct
     Hello:
+      description: Hello description
       required:
         - myName
         - my_age
@@ -167,6 +168,7 @@ components:
     # test various combinations of nullable and required
     NullableStruct:
       # struct itself is nullable
+      description: This is how we represent a struct that is nullable
       nullable: true
       required:
         - this
@@ -194,6 +196,7 @@ components:
       type: any
 
     AllOfTest:
+      description: Test the AllOf struct generation
       allOf:
         - $ref: '#/components/schemas/Hello'
         - type: object
@@ -219,6 +222,7 @@ components:
                   $ref: '#/components/schemas/Anything'
 
     OneOfTest:
+      description: Test the OneOf enum generation
       oneOf:
         - $ref: '#/components/schemas/Hello'
         - $ref: '#/components/schemas/NullableStruct'
