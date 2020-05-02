@@ -105,6 +105,36 @@ impl Variant {
     }
 }
 
+impl quote::ToTokens for Variant {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let descr = self.description.as_ref().map(doc_comment);
+        let name = &self.name;
+        let rename = self.rename.as_ref().map(|name| {
+            quote! {
+                #[serde(rename = #name)]
+            }
+        });
+        let tok = match self.type_path.as_ref() {
+            Some(path) => {
+                let varty = path.canonicalize();
+                quote! {
+                    #descr
+                    #rename
+                    #name(#varty)
+                }
+            }
+            None => {
+                quote! {
+                    #descr
+                    #rename
+                    #name
+                }
+            }
+        };
+        tokens.extend(tok);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
     // primitives
@@ -695,7 +725,11 @@ fn generate_rust_type(
                 T::StringEnum(variants) => {
                     let variants: Vec<_> = variants
                         .iter()
-                        .map(|var| Ok(Variant::new(var.parse()?)))
+                        .map(|var| {
+                            let var =
+                                Variant::new(var.to_camel_case().parse()?).rename(var.clone());
+                            Ok(var)
+                        })
                         .collect::<Result<_>>()?;
                     generate_enum_def(&name, &typ.meta, &variants, None)
                 }
@@ -793,50 +827,26 @@ fn generate_struct_def(
 pub(crate) fn generate_enum_def(
     name: &TypeName,
     meta: &TypeMetadata,
-    variants_info: &[Variant],
+    variants: &[Variant],
     dflt: Option<&Variant>,
 ) -> TokenStream {
-    let mut variants = vec![];
-    for Variant {
-        name,
-        description,
-        type_path,
-        rename,
-    } in variants_info
-    {
-        let descr = description.as_ref().map(doc_comment);
-        match type_path.as_ref() {
-            Some(path) => {
-                let varty = path.canonicalize();
-                variants.push(quote! {
-                    #descr
-                    #name(#varty)
-                });
-            }
-            None => {
-                variants.push(quote! {
-                    #descr
-                    #name
-                });
-            }
-        }
-    }
-    if let Some(variant) = dflt {
+    // Special-case the default variant
+    let default = dflt.map(|variant| {
         let docs = variant.description.as_ref().map(doc_comment);
         match &variant.type_path {
-            None => variants.push(quote! {Default { status_code: u16 }}),
+            None => quote! {Default { status_code: u16 }},
             Some(path) => {
                 let varty = path.canonicalize();
-                variants.push(quote! {
+                quote! {
                     #docs
                     Default {
                         status_code: u16,
                         body: #varty
                     }
-                })
+                }
             }
         }
-    };
+    });
     let derives = get_derive_tokens();
     let visibility = meta.visibility;
     let descr = meta.description();
@@ -845,6 +855,7 @@ pub(crate) fn generate_enum_def(
         #derives
         #visibility enum #name {
             #(#variants,)*
+            #default
         }
     }
 }
