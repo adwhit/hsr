@@ -238,3 +238,20 @@ components:
                 type: number
               y:
                 type: string
+
+
+    StringEnum:
+      type:
+        string
+      enum:
+        - "foo"
+        - "bar"
+        - "baz-quxx"
+
+    # HasAdditionalProps:
+    #   additionalProperties:
+    #     true
+
+    # HasADefault:
+    #   type: integer
+    #   default: 10

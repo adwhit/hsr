@@ -71,19 +71,15 @@ impl Route {
             .with_codes
             .iter()
             .map(|(code, resp)| {
-                Variant::new(
-                    variant_from_status_code(code),
-                    Some(resp.description.clone()),
-                    resp.type_path.clone(),
-                )
+                Variant::new(variant_from_status_code(code))
+                    .description(resp.description.clone())
+                    .type_path(resp.type_path.clone())
             })
             .collect();
         let default_variant = self.responses.default.as_ref().map(|dflt| {
-            Variant::new(
-                "Default".parse().unwrap(),
-                Some(dflt.description.clone()),
-                dflt.type_path.clone(),
-            )
+            Variant::new("Default".parse().unwrap())
+                .description(dflt.description.clone())
+                .type_path(dflt.type_path.clone())
         });
         let meta = TypeMetadata::default()
             .with_description(format!("Returned from operation '{}'", self.operation_id));

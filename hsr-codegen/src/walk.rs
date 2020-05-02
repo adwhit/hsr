@@ -2,8 +2,9 @@ use heck::CamelCase;
 use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
-    AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
-    ReferenceOr, Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
+    AdditionalProperties, AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter,
+    ParameterSchemaOrContent, ReferenceOr, Schema, SchemaData, SchemaKind,
+    StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -67,17 +68,49 @@ enum Primitive {
 }
 
 /// Represent a variant of an enum
-#[derive(Debug, Clone, derive_more::Constructor)]
+#[derive(Debug, Clone)]
 pub(crate) struct Variant {
     pub name: Ident,
     pub description: Option<String>,
     pub type_path: Option<TypePath>,
+    pub rename: Option<String>,
+}
+
+impl Variant {
+    pub fn new(name: Ident) -> Self {
+        Self {
+            name,
+            description: None,
+            type_path: None,
+            rename: None,
+        }
+    }
+
+    pub(crate) fn description(self, description: String) -> Self {
+        Self {
+            description: Some(description),
+            ..self
+        }
+    }
+
+    pub(crate) fn type_path(self, type_path: Option<TypePath>) -> Self {
+        Self { type_path, ..self }
+    }
+
+    pub(crate) fn rename(self, rename: String) -> Self {
+        Self {
+            rename: Some(rename),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
     // primitives
     Primitive(Primitive),
+    // String that can only take set values
+    StringEnum(Vec<String>),
     // An array of of some inner type
     Array(Box<ReferenceOr<Type>>),
     // Any type. Could be anything! Probably a user-error
@@ -129,6 +162,7 @@ impl Struct {
 
 trait ObjectLike {
     fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>>;
+    fn additional_properties(&self) -> &Option<AdditionalProperties>;
     fn required(&self) -> &[String];
 }
 
@@ -138,6 +172,11 @@ macro_rules! impl_objlike {
             fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>> {
                 &self.properties
             }
+
+            fn additional_properties(&self) -> &Option<AdditionalProperties> {
+                &self.additional_properties
+            }
+
             fn required(&self) -> &[String] {
                 &self.required
             }
@@ -477,9 +516,22 @@ fn build_type_recursive(
         ReferenceOr::Item(item) => item,
     };
     let meta = schema.schema_data.clone();
+
+    if let Some(_) = meta.default {
+        todo!("Default values not supported (location: '{}')", path)
+    }
+
+    if let Some(_) = meta.discriminator {
+        todo!("Discriminator values not supported (location: '{}')", path)
+    }
+
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
+            if let Some(_) = obj.additional_properties() {
+                todo!("Additional properties not supported (location: '{}')", path)
+            }
+
             let inner = if obj.properties.is_empty() {
                 TypeInner::Any
             } else {
@@ -528,7 +580,21 @@ fn build_type_recursive(
         // TODO make enums from string
         // TODO fail on other validation
         // handle the primitives in a straightforward way
-        ApiType::String(_) => TypeInner::Primitive(Primitive::String),
+        ApiType::String(strty) => {
+            if !strty.format.is_empty() {
+                todo!("String formats not supported (location: '{}')", path)
+            }
+
+            if let Some(_) = strty.pattern {
+                todo!("String patterns not supported (location: '{}')", path)
+            }
+
+            if !strty.enumeration.is_empty() {
+                TypeInner::StringEnum(strty.enumeration.clone())
+            } else {
+                TypeInner::Primitive(Primitive::String)
+            }
+        }
         ApiType::Number(_) => TypeInner::Primitive(Primitive::F64),
         ApiType::Integer(_) => TypeInner::Primitive(Primitive::I64),
         ApiType::Boolean {} => TypeInner::Primitive(Primitive::Bool),
@@ -544,6 +610,9 @@ fn build_type_recursive(
             TypeInner::Array(Box::new(innerty))
         }
         ApiType::Object(obj) => {
+            if let Some(_) = obj.additional_properties() {
+                todo!("Additional properties not supported")
+            }
             TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
         }
     };
@@ -555,7 +624,6 @@ fn build_type_recursive(
 pub(crate) fn generate_rust_types(types: &TypeLookup) -> Result<TokenStream> {
     let mut tokens = TokenStream::new();
     for (typepath, typ) in types {
-        println!("{:?}, {:?}", typepath, typ);
         let def = generate_rust_type(typepath, typ, types)?;
         tokens.extend(def);
     }
@@ -600,10 +668,9 @@ fn generate_rust_type(
                 T::OneOf(variants) => {
                     let variants: Vec<_> = variants
                         .iter()
-                        .map(|var| Variant {
-                            name: var.canonicalize().to_string().parse().unwrap(),
-                            type_path: Some(var.clone()),
-                            description: None,
+                        .map(|var| {
+                            Variant::new(var.canonicalize().to_string().parse().unwrap())
+                                .type_path(Some(var.clone()))
                         })
                         .collect();
                     generate_enum_def(&name, &typ.meta, &variants, None)
@@ -624,6 +691,13 @@ fn generate_rust_type(
                         #descr
                         type #name = #ty;
                     }
+                }
+                T::StringEnum(variants) => {
+                    let variants: Vec<_> = variants
+                        .iter()
+                        .map(|var| Ok(Variant::new(var.parse()?)))
+                        .collect::<Result<_>>()?;
+                    generate_enum_def(&name, &typ.meta, &variants, None)
                 }
                 T::Array(_) => {
                     let path = ApiPath::from(type_path.clone());
@@ -727,6 +801,7 @@ pub(crate) fn generate_enum_def(
         name,
         description,
         type_path,
+        rename,
     } in variants_info
     {
         let descr = description.as_ref().map(doc_comment);
