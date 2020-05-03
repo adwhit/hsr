@@ -19,8 +19,11 @@ impl TestApi for Api {
         })
     }
 
-    async fn two_query_params(&self, myName: String, my_age: Option<i64>) -> api::TwoQueryParams {
-        api::TwoQueryParams::Ok(api::Hello { myName, my_age })
+    async fn two_query_params(&self, my_name: String, my_age: Option<i64>) -> api::TwoQueryParams {
+        api::TwoQueryParams::Ok(api::Hello {
+            myName: my_name,
+            my_age,
+        })
     }
 
     async fn just_default(&self) -> api::JustDefault {
@@ -41,9 +44,9 @@ impl TestApi for Api {
     }
 
     async fn nestedResponse(&self) -> api::NestedResponse {
-        api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
-            first: api::PathsNestedResponseTypeGetResponsesFirst {
-                second: api::PathsNestedResponseTypeGetResponsesFirstSecond {},
+        api::NestedResponse::Ok(api::NestedResponse200 {
+            first: api::FirstResponse {
+                second: api::NestedResponse200FirstSecond {},
             },
         })
     }
@@ -167,9 +170,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let nested = client.nestedResponse().await?;
         assert_eq!(
             nested,
-            api::NestedResponse::Ok(api::PathsNestedResponseTypeGetResponses {
-                first: api::PathsNestedResponseTypeGetResponsesFirst {
-                    second: api::PathsNestedResponseTypeGetResponsesFirstSecond {}
+            api::NestedResponse::Ok(api::NestedResponse200 {
+                first: api::FirstResponse {
+                    second: api::NestedResponse200FirstSecond {}
                 }
             })
         );
@@ -177,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         // TODO I doubt this is being serialized properly. Need to send as 'untagged'
-        let payload = api::OneOfTest::OneOfTestOneOf0(hello());
+        let payload = api::OneOfTest::V1(hello());
         let body = client.anything_goes(payload.clone()).await?;
         assert_eq!(body, api::AnythingGoes::Ok(payload));
     }

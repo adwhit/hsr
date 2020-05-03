@@ -7,40 +7,30 @@ Build fast HTTP apis fast, with Rust, and [OpenAPI](https://swagger.io/docs/spec
  * Implement your interface (simple, safe, strongly typed!)
  * Run! 'If it compiles, it works!'
 
+## Docs
 
-## Quickstart
+### Quickstart
 
 Take a look at the [quickstart example](examples/quickstart). It contains the
 minimum boilerplate needed to get up and running.
 
-## Less Quick Start
+### Tutorial
 
-Take a look at the [petstore example](examples/petstore) for a more in-depth example
-showcasing a 'database' backend.
+Read the [tutorial](examples/tutorial) for a step-by-step guide to get up and running.
+
+### Less Quick Start
+
+Take a look at the [petstore example](examples/petstore) for a more complex example
+with a mocked database backend.
 
 ## Features
 
-- [x] HTTP server
-- [x] HTTP client
-- [x] Type-safe path/query/json handling
-- [x] Supports all HTTP verbs
-- [x] High performance
-- [x] Based on `async/await` and `actix-web 2.0`
-- [x] Use async in trait (partial - uses the amazing [`async-trait`](https://github.com/dtolnay/async-trait))
-- [x] Works on stable Rust
-- [x] Benchmarks
-- [x] Full test spec
-
-## Roadmap
-
-- [ ] HTTPS
-- [ ] Support headers
-- [ ] Support default values
-- [ ] Advanced server configuration (with middleware etc)
-- [ ] support JSON (not just YAML) schema
-- [ ] Tutorial
-- [ ] Return content-types other than JSON
-- [ ] Auto-generate a client binary
+* HTTP server
+* HTTP client
+* Type-safe path/query/json handling
+* Supports all HTTP verbs
+* High performance
+* Based on `async/await` and `actix-web 2.0`
 
 ## FAQ
 

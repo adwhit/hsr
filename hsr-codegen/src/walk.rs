@@ -2,8 +2,9 @@ use heck::CamelCase;
 use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
-    AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent,
-    ReferenceOr, Schema, SchemaData, SchemaKind, StatusCode as ApiStatusCode, Type as ApiType,
+    AdditionalProperties, AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter,
+    ParameterSchemaOrContent, ReferenceOr, Schema, SchemaData, SchemaKind,
+    StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -15,12 +16,13 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    dereference, get_derive_tokens,
-    route::{validate_routes, Route},
-    unwrap_ref, variant_from_status_code, ApiPath, Error, FieldMetadata, Ident, Method,
-    MethodWithBody, MethodWithoutBody, RawMethod, Result, RoutePath, SchemaLookup, StatusCode,
-    TypeMetadata, TypeName, TypePath, Visibility,
+    dereference, doc_comment, get_derive_tokens, unwrap_ref, variant_from_status_code, ApiPath,
+    Error, FieldMetadata, Ident, Method, MethodWithBody, MethodWithoutBody, RawMethod, Result,
+    RoutePath, SchemaLookup, StatusCode, TypeMetadata, TypeName, TypePath, Visibility,
 };
+
+use crate::route::{validate_routes, Response, Responses, Route};
+
 use proc_macro2::Ident as QIdent;
 
 pub(crate) type TypeLookup = BTreeMap<TypePath, ReferenceOr<Type>>;
@@ -65,10 +67,80 @@ enum Primitive {
     Bool,
 }
 
+/// Represent a variant of an enum
+#[derive(Debug, Clone)]
+pub(crate) struct Variant {
+    pub name: Ident,
+    pub description: Option<String>,
+    pub type_path: Option<TypePath>,
+    pub rename: Option<String>,
+}
+
+impl Variant {
+    pub fn new(name: Ident) -> Self {
+        Self {
+            name,
+            description: None,
+            type_path: None,
+            rename: None,
+        }
+    }
+
+    pub(crate) fn description(self, description: String) -> Self {
+        Self {
+            description: Some(description),
+            ..self
+        }
+    }
+
+    pub(crate) fn type_path(self, type_path: Option<TypePath>) -> Self {
+        Self { type_path, ..self }
+    }
+
+    pub(crate) fn rename(self, rename: String) -> Self {
+        Self {
+            rename: Some(rename),
+            ..self
+        }
+    }
+}
+
+impl quote::ToTokens for Variant {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let descr = self.description.as_ref().map(doc_comment);
+        let name = &self.name;
+        let rename = self.rename.as_ref().map(|name| {
+            quote! {
+                #[serde(rename = #name)]
+            }
+        });
+        let tok = match self.type_path.as_ref() {
+            Some(path) => {
+                let varty = path.canonicalize();
+                quote! {
+                    #descr
+                    #rename
+                    #name(#varty)
+                }
+            }
+            None => {
+                quote! {
+                    #descr
+                    #rename
+                    #name
+                }
+            }
+        };
+        tokens.extend(tok);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum TypeInner {
     // primitives
     Primitive(Primitive),
+    // String that can only take set values
+    StringEnum(Vec<String>),
     // An array of of some inner type
     Array(Box<ReferenceOr<Type>>),
     // Any type. Could be anything! Probably a user-error
@@ -109,7 +181,7 @@ impl Struct {
             let ty = build_type_recursive(&schemaref, path.clone(), type_index)?;
             let type_path = TypePath::from(path);
             assert!(type_index.insert(type_path.clone(), ty.clone()).is_none());
-            let meta = FieldMetadata::default().required(required_args.contains(name));
+            let meta = FieldMetadata::default().with_required(required_args.contains(name));
             if let Some(_) = fields.insert(name.parse()?, (meta, type_path)) {
                 invalid!("Duplicate field name: '{}'", name);
             }
@@ -120,6 +192,7 @@ impl Struct {
 
 trait ObjectLike {
     fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>>;
+    fn additional_properties(&self) -> &Option<AdditionalProperties>;
     fn required(&self) -> &[String];
 }
 
@@ -129,6 +202,11 @@ macro_rules! impl_objlike {
             fn properties(&self) -> &Map<String, ReferenceOr<Box<Schema>>> {
                 &self.properties
             }
+
+            fn additional_properties(&self) -> &Option<AdditionalProperties> {
+                &self.additional_properties
+            }
+
             fn required(&self) -> &[String] {
                 &self.required
             }
@@ -140,6 +218,9 @@ impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
 pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Route>>)> {
+    if !api.security.is_empty() {
+        todo!("Security not supported")
+    }
     let mut type_index = TypeLookup::new();
     let dummy = Default::default();
     let components = api.components.as_ref().unwrap_or(&dummy);
@@ -172,8 +253,13 @@ fn walk_paths(
         let route_path = RoutePath::analyse(path)?;
 
         debug!("Gathering types for path: {:?}", path);
-        // TODO lookup
+        // TODO lookup rather than unwrap
         let pathitem = unwrap_ref(&ref_or_item)?;
+
+        if !pathitem.parameters.is_empty() {
+            todo!("Path-level paraters are not supported")
+        }
+
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
             let route = walk_operation(
@@ -236,8 +322,12 @@ fn walk_operation(
 
     use Parameter::*;
 
-    let operation_id = match op.operation_id {
-        Some(ref op) => op.parse(),
+    if !op.security.is_empty() {
+        todo!("Security not supported")
+    }
+
+    let (operation_id, path) = match op.operation_id {
+        Some(ref op) => op.parse().map(|opid| (opid, path.push(op))),
         None => invalid!("Missing operationId for '{}'", route_path),
     }?;
 
@@ -253,11 +343,36 @@ fn walk_operation(
         // for each parameter we gather the type but we also need to
         // collect the Queries and Paths to make the parent Query and Path types
         let param = dereference(param, &components.parameters)?;
-        match param {
-            Path { parameter_data, .. } => {
+
+        let parameter_data = match param {
+            Path { parameter_data, .. }
+            | Query { parameter_data, .. }
+            | Header { parameter_data, .. }
+            | Cookie { parameter_data, .. } => parameter_data,
+        };
+
+        // We use macros here and below to cut down on duplication between path and query params
+        macro_rules! build_param_type {
+            ($params: ident, $path: expr) => {
                 if !duplicate_param_name_check.insert(&parameter_data.name) {
                     invalid!("Duplicated parameter '{}'", parameter_data.name)
                 }
+                let path = path.clone().push($path).push(&parameter_data.name);
+                let name: Ident = parameter_data.name.parse()?;
+                let meta = FieldMetadata::default().with_required(parameter_data.required);
+                $params.insert(name, (meta, TypePath::from(path.clone())));
+                match &parameter_data.format {
+                    ParameterSchemaOrContent::Schema(schema) => {
+                        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
+                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
+                    }
+                    ParameterSchemaOrContent::Content(_) => todo!(),
+                }
+            };
+        }
+
+        match param {
+            Path { .. } => {
                 if !expected_route_params.remove(parameter_data.name.as_str()) {
                     invalid!("path parameter '{}' not found in path", parameter_data.name)
                 }
@@ -267,33 +382,10 @@ fn walk_operation(
                         parameter_data.name
                     )
                 }
-                let path = path.clone().push("path").push(&parameter_data.name);
-                let name: Ident = parameter_data.name.parse()?;
-                let meta = FieldMetadata::default().required(parameter_data.required);
-                path_params.insert(name, (meta, TypePath::from(path.clone())));
-                match &parameter_data.format {
-                    ParameterSchemaOrContent::Schema(schema) => {
-                        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
-                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
-                    }
-                    ParameterSchemaOrContent::Content(_) => todo!(),
-                }
+                build_param_type!(path_params, "path");
             }
-            Query { parameter_data, .. } => {
-                if !duplicate_param_name_check.insert(&parameter_data.name) {
-                    invalid!("Duplicated parameter '{}'", parameter_data.name)
-                }
-                let path = path.clone().push("query").push(&parameter_data.name);
-                let name: Ident = parameter_data.name.parse()?;
-                let meta = FieldMetadata::default().required(parameter_data.required);
-                query_params.insert(name, (meta, TypePath::from(path.clone())));
-                match &parameter_data.format {
-                    ParameterSchemaOrContent::Schema(schema) => {
-                        let typ = build_type_recursive(&schema, path.clone(), type_index)?;
-                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
-                    }
-                    ParameterSchemaOrContent::Content(_) => todo!(),
-                }
+            Query { .. } => {
+                build_param_type!(query_params, "query");
             }
             Header { .. } => todo!(),
             Cookie { .. } => todo!(),
@@ -307,39 +399,29 @@ fn walk_operation(
         )
     }
 
-    let path_params = if path_params.is_empty() {
-        None
-    } else {
-        // construct a path param type, if any
-        // This will be used as an Extractor in actix-web
-        let typ = TypeInner::Struct(Struct {
-            fields: path_params.clone(),
-        })
-        .with_meta(TypeMetadata::default().visibility(Visibility::Private));
-        let type_path = TypePath::from(path.clone().push("path"));
-        let exists = type_index
-            .insert(type_path.clone(), ReferenceOr::Item(typ))
-            .is_some();
-        assert!(!exists);
-        Some((type_path, path_params))
+    macro_rules! type_from_params {
+        ($params: ident, $path: expr) => {
+            if $params.is_empty() {
+                None
+            } else {
+                // construct a path param type, if any
+                // This will be used as an Extractor in actix-web
+                let typ = TypeInner::Struct(Struct {
+                    fields: $params.clone(),
+                })
+                .with_meta(TypeMetadata::default().with_visibility(Visibility::Private));
+                let type_path = TypePath::from(path.clone().push($path));
+                let exists = type_index
+                    .insert(type_path.clone(), ReferenceOr::Item(typ))
+                    .is_some();
+                assert!(!exists);
+                Some((type_path, $params))
+            }
+        };
     };
 
-    let query_params = if query_params.is_empty() {
-        None
-    } else {
-        // construct a query param type, if any
-        // This will be used as an Extractor in actix-web
-        let typ = TypeInner::Struct(Struct {
-            fields: query_params.clone(),
-        })
-        .with_meta(TypeMetadata::default().visibility(Visibility::Private));
-        let type_path = TypePath::from(path.clone().push("query"));
-        let exists = type_index
-            .insert(type_path.clone(), ReferenceOr::Item(typ))
-            .is_some();
-        assert!(!exists);
-        Some((type_path, query_params))
-    };
+    let path_params = type_from_params!(path_params, "path");
+    let query_params = type_from_params!(query_params, "query");
 
     let body_path: Option<TypePath> = op
         .request_body
@@ -355,22 +437,17 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let (return_types, default_return_type) = walk_responses(
-        &op.responses,
-        path.push("responses"),
-        type_index,
-        components,
-    )?;
+    let responses = walk_responses(&op.responses, path, type_index, components)?;
 
     let route = Route::new(
         op.summary.clone(),
+        op.description.clone(),
         operation_id,
         method,
         route_path.clone(),
         path_params,
         query_params,
-        return_types,
-        default_return_type,
+        responses,
     );
 
     Ok(route)
@@ -402,20 +479,13 @@ fn walk_contents(
         .transpose()
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum DefaultResponse {
-    None,
-    Anonymous,
-    Typed(TypePath),
-}
-
 fn walk_responses(
     resps: &openapiv3::Responses,
     path: ApiPath,
     type_index: &mut TypeLookup,
     components: &Components,
-) -> Result<(Map<StatusCode, Option<TypePath>>, DefaultResponse)> {
-    let response_tys: Map<StatusCode, Option<TypePath>> = resps
+) -> Result<Responses> {
+    let with_codes: Map<StatusCode, Response> = resps
         .responses
         .iter()
         .map(|(code, resp)| {
@@ -425,39 +495,47 @@ fn walk_responses(
                 ApiStatusCode::Range(v) => invalid!("Status code ranges not supported '{}'", v),
             }?;
             let resp = dereference(resp, &components.responses)?;
-            walk_response(resp, path.clone(), type_index).map(|pth| (code, pth))
+            walk_response(
+                resp,
+                path.clone().push(code.as_u16().to_string()),
+                type_index,
+            )
+            .map(|pth| (code, pth))
         })
         .collect::<Result<_>>()?;
 
-    let dflt_ty = resps
+    let default = resps
         .default
         .as_ref()
-        .map::<Result<DefaultResponse>, _>(|dflt| {
+        .map::<Result<Response>, _>(|dflt| {
             let resp = dereference(dflt, &components.responses)?;
             let path = path.clone().push("default");
-            let dflt = walk_response(&resp, path, type_index)?
-                .map(|path| DefaultResponse::Typed(path))
-                .unwrap_or(DefaultResponse::Anonymous);
-            Ok(dflt)
+            walk_response(&resp, path, type_index)
         })
-        .transpose()?
-        .unwrap_or(DefaultResponse::None);
+        .transpose()?;
 
-    Ok((response_tys, dflt_ty))
+    Ok(Responses {
+        with_codes,
+        default,
+    })
 }
 
 fn walk_response(
     resp: &openapiv3::Response,
     path: ApiPath,
     type_index: &mut TypeLookup,
-) -> Result<Option<TypePath>> {
+) -> Result<Response> {
     if !resp.headers.is_empty() {
         todo!("response headers not supported")
     }
     if !resp.links.is_empty() {
         todo!("response links not supported")
     }
-    walk_contents(&resp.content, path, type_index)
+    let type_path = walk_contents(&resp.content, path, type_index)?;
+    Ok(Response {
+        type_path,
+        description: resp.description.clone(),
+    })
 }
 
 /// Build a type from a schema definition
@@ -480,9 +558,22 @@ fn build_type_recursive(
         ReferenceOr::Item(item) => item,
     };
     let meta = schema.schema_data.clone();
+
+    if let Some(_) = meta.default {
+        todo!("Default values not supported (location: '{}')", path)
+    }
+
+    if let Some(_) = meta.discriminator {
+        todo!("Discriminator values not supported (location: '{}')", path)
+    }
+
     let ty = match &schema.schema_kind {
         SchemaKind::Type(ty) => ty,
         SchemaKind::Any(obj) => {
+            if let Some(_) = obj.additional_properties() {
+                todo!("Additional properties not supported (location: '{}')", path)
+            }
+
             let inner = if obj.properties.is_empty() {
                 TypeInner::Any
             } else {
@@ -531,7 +622,21 @@ fn build_type_recursive(
         // TODO make enums from string
         // TODO fail on other validation
         // handle the primitives in a straightforward way
-        ApiType::String(_) => TypeInner::Primitive(Primitive::String),
+        ApiType::String(strty) => {
+            if !strty.format.is_empty() {
+                todo!("String formats not supported (location: '{}')", path)
+            }
+
+            if let Some(_) = strty.pattern {
+                todo!("String patterns not supported (location: '{}')", path)
+            }
+
+            if !strty.enumeration.is_empty() {
+                TypeInner::StringEnum(strty.enumeration.clone())
+            } else {
+                TypeInner::Primitive(Primitive::String)
+            }
+        }
         ApiType::Number(_) => TypeInner::Primitive(Primitive::F64),
         ApiType::Integer(_) => TypeInner::Primitive(Primitive::I64),
         ApiType::Boolean {} => TypeInner::Primitive(Primitive::Bool),
@@ -547,6 +652,9 @@ fn build_type_recursive(
             TypeInner::Array(Box::new(innerty))
         }
         ApiType::Object(obj) => {
+            if let Some(_) = obj.additional_properties() {
+                todo!("Additional properties not supported")
+            }
             TypeInner::Struct(Struct::from_objlike_recursive(obj, path, type_index)?)
         }
     };
@@ -558,7 +666,6 @@ fn build_type_recursive(
 pub(crate) fn generate_rust_types(types: &TypeLookup) -> Result<TokenStream> {
     let mut tokens = TokenStream::new();
     for (typepath, typ) in types {
-        println!("{:?}, {:?}", typepath, typ);
         let def = generate_rust_type(typepath, typ, types)?;
         tokens.extend(def);
     }
@@ -583,16 +690,10 @@ fn generate_rust_type(
             }
         }
         ReferenceOr::Item(typ) => {
-            let descr = typ.meta.description.as_ref().map(|s| {
-                quote! {
-                    #[doc = #s]
-                }
-            });
-            let nullable = typ.meta.nullable;
-            let visibility = typ.meta.visibility;
             use TypeInner as T;
             match &typ.typ {
                 T::Any => {
+                    let descr = typ.meta.description();
                     quote! {
                         #descr
                         // could be 'any' valid json
@@ -609,13 +710,18 @@ fn generate_rust_type(
                 T::OneOf(variants) => {
                     let variants: Vec<_> = variants
                         .iter()
-                        .map(|var| (var.canonicalize(), Some(var.clone())))
+                        .enumerate()
+                        .map(|(ix, var)| {
+                            Variant::new(format!("V{}", ix + 1).parse().unwrap())
+                                .type_path(Some(var.clone()))
+                        })
                         .collect();
-                    generate_enum_def(&name, &variants, &DefaultResponse::None)
+                    generate_enum_def(&name, &typ.meta, &variants, None, true)
                 }
                 T::Primitive(p) => {
                     let id = crate::ident(p);
-                    let ty = if nullable {
+                    let descr = typ.meta.description();
+                    let ty = if typ.meta.nullable {
                         quote! {
                             Option<#id>
                         }
@@ -629,12 +735,24 @@ fn generate_rust_type(
                         type #name = #ty;
                     }
                 }
+                T::StringEnum(variants) => {
+                    let variants: Vec<_> = variants
+                        .iter()
+                        .map(|var| {
+                            let var =
+                                Variant::new(var.to_camel_case().parse()?).rename(var.clone());
+                            Ok(var)
+                        })
+                        .collect::<Result<_>>()?;
+                    generate_enum_def(&name, &typ.meta, &variants, None, false)
+                }
                 T::Array(_) => {
                     let path = ApiPath::from(type_path.clone());
                     let inner_path = TypePath::from(path.push("array"));
                     assert!(lookup.contains_key(&inner_path));
                     let inner_path = inner_path.canonicalize();
-                    if nullable {
+                    let descr = typ.meta.description();
+                    if typ.meta.nullable {
                         quote! {
                             #descr
                             type #name = Option<Vec<#inner_path>>;
@@ -647,56 +765,7 @@ fn generate_rust_type(
                     }
                 }
                 T::Struct(strukt) => {
-                    let fieldnames: Vec<_> = strukt.fields.iter().map(|(field, _)| field).collect();
-                    let fields: Vec<TokenStream> = strukt
-                        .fields
-                        .iter()
-                        .map(|(_field, (meta, field_type_path))| {
-                            // Tricky bit. The field may be 'not required', from POV of the struct
-                            // but also the type itself may be nullable. This is supposed to represent
-                            // how in javascript an object key may be 'missing', or it may be 'null'
-                            // This doesn't work well for Rust which has no concept of 'missing',
-                            // so both these cases are covered by making it and Option<T>. But this
-                            // means if a field is both 'not required' and 'nullable', we run risk of
-                            // doubling the type up as Option<Option<T>>. We hack around this by reaching
-                            // into to type and combining the two attributes into one
-
-                            let ref_or = lookup.get(&field_type_path).unwrap(); // this lookup should not fail
-                            let field_type = lookup_type_recursive(ref_or, lookup)?; // this one can
-                            let required = meta.required;
-                            let nullable = field_type.meta.nullable;
-                            let field_type_name = field_type_path.canonicalize();
-                            let def = if nullable || (required && !nullable) {
-                                quote! {#field_type_name}
-                            } else {
-                                quote! {Option<#field_type_name>}
-                            };
-                            Ok(def)
-                        })
-                        .collect::<Result<_>>()?;
-                    let derives = get_derive_tokens();
-                    if nullable {
-                        // Uh oh. We can't define a 'nullable stuct'. Instead make a struct with
-                        // a different name and create alias to it
-                        let new_path = TypePath::from(ApiPath::from(type_path.clone()).push("opt"));
-                        let new_name = new_path.canonicalize();
-                        quote! {
-                            #descr
-                            #derives
-                            #visibility struct #new_name {
-                                #(pub #fieldnames: #fields),*
-                            }
-                            #visibility type #name = Option<#new_name>;
-                        }
-                    } else {
-                        quote! {
-                            #descr
-                            #derives
-                            #visibility struct #name {
-                                #(pub #fieldnames: #fields),*
-                            }
-                        }
-                    }
+                    generate_struct_def(strukt, &name, type_path, &typ.meta, lookup)?
                 }
             }
         }
@@ -704,43 +773,147 @@ fn generate_rust_type(
     Ok(def)
 }
 
-/// If there are multitple difference error types, construct an
+fn generate_struct_def(
+    strukt: &Struct,
+    name: &TypeName,
+    type_path: &TypePath,
+    meta: &TypeMetadata,
+    lookup: &TypeLookup,
+) -> Result<TokenStream> {
+    let fieldnames: Vec<_> = strukt.fields.iter().map(|(field, _)| field).collect();
+    let visibility = meta.visibility;
+    let descr = meta.description();
+    let fields: Vec<TokenStream> = strukt
+        .fields
+        .iter()
+        .map(|(_field, (meta, field_type_path))| {
+            // Tricky bit. The field may be 'not required', from POV of the struct
+            // but also the type itself may be nullable. This is supposed to represent
+            // how in javascript an object key may be 'missing', or it may be 'null'
+            // This doesn't work well for Rust which has no concept of 'missing',
+            // so both these cases are covered by making it and Option<T>. But this
+            // means if a field is both 'not required' and 'nullable', we run risk of
+            // doubling the type up as Option<Option<T>>. We hack around this by reaching
+            // into to type and combining the two attributes into one
+
+            let ref_or = lookup.get(&field_type_path).unwrap(); // this lookup should not fail
+            let field_type = lookup_type_recursive(ref_or, lookup)?; // this one can
+            let required = meta.required;
+            let nullable = field_type.meta.nullable;
+            let field_type_name = field_type_path.canonicalize();
+            let def = if nullable || (required && !nullable) {
+                quote! {#field_type_name}
+            } else {
+                quote! {Option<#field_type_name>}
+            };
+            Ok(def)
+        })
+        .collect::<Result<_>>()?;
+    let derives = get_derive_tokens();
+    // Another tricky bit. We have to create 'some' type with the
+    // canonical name, either concrete struct or alias, so that it can be
+    // referenced from elsewhere. But we also need want to potentially
+    // rename the type to the 'title', and also perhaps make it an 'nullable'
+    // which amounts to creating an inner type and then aliasing to Option<Inner>
+    // So now we handle these various cases
+    let tokens = match (&meta.title, meta.nullable) {
+        (None, false) => {
+            quote! {
+                #descr
+                #derives
+                #visibility struct #name {
+                    #(pub #fieldnames: #fields),*
+                }
+            }
+        }
+        (None, true) => {
+            let new_path = TypePath::from(ApiPath::from(type_path.clone()).push("opt"));
+            let new_name = new_path.canonicalize();
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                #visibility type #name = Option<#new_name>;
+            }
+        }
+        (Some(title), false) => {
+            let new_name = title.parse::<Ident>()?;
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                // This alias is not visible because we prefer to use new_name
+                type #name = #new_name;
+            }
+        }
+        (Some(title), true) => {
+            let new_name = title.parse::<Ident>()?;
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                #visibility type #name = Option<#new_name>;
+            }
+        }
+    };
+    Ok(tokens)
+}
+
+/// TODO If there are multiple different error types, construct an
 /// enum to hold them all. If there is only one or none, don't bother.
 pub(crate) fn generate_enum_def(
     name: &TypeName,
-    variants_info: &[(TypeName, Option<TypePath>)],
-    dflt: &DefaultResponse,
+    meta: &TypeMetadata,
+    variants: &[Variant],
+    dflt: Option<&Variant>,
+    untagged: bool,
 ) -> TokenStream {
-    let mut variants = vec![];
-    for (variant_name, variant_type_path_opt) in variants_info {
-        match variant_type_path_opt.as_ref() {
+    if variants.is_empty() && dflt.is_none() {
+        // Should not be able to get here (?)
+        panic!("Enum '{}' has no variants", name);
+    }
+
+    // should serde do untagged serialization?
+    // (The answer should be 'no', unless it is a OneOf/AnyOf type)
+    let serde_tag = if untagged {
+        Some(quote! {#[serde(untagged)]})
+    } else {
+        None
+    };
+
+    // Special-case the default variant
+    let default = dflt.map(|variant| {
+        let docs = variant.description.as_ref().map(doc_comment);
+        match &variant.type_path {
+            None => quote! {Default { status_code: u16 }},
             Some(path) => {
                 let varty = path.canonicalize();
-                variants.push(quote! { #variant_name(#varty) });
-            }
-            None => {
-                variants.push(quote! { #variant_name });
-            }
-        }
-    }
-    match dflt {
-        DefaultResponse::None => {}
-        DefaultResponse::Anonymous => variants.push(quote! {Default { status_code: u16 }}),
-        DefaultResponse::Typed(path) => {
-            let varty = path.canonicalize();
-            variants.push(quote! {
-                Default {
-                    status_code: u16,
-                    body: #varty
+                quote! {
+                    #docs
+                    Default {
+                        status_code: u16,
+                        body: #varty
+                    }
                 }
-            })
+            }
         }
-    }
+    });
     let derives = get_derive_tokens();
+    let visibility = meta.visibility;
+    let descr = meta.description();
     quote! {
+        #descr
         #derives
-        pub enum #name {
+        #serde_tag
+        #visibility enum #name {
             #(#variants,)*
+            #default
         }
     }
 }

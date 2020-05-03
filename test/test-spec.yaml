@@ -15,9 +15,11 @@ paths:
           description: "Ok"
 
     post:
+      summary: Set The Status
+      description: I guess we are setting some kind of status
       operationId: set_status
       requestBody:
-        description: set status
+        description: set status body
         required: false
         content:
           application/json:
@@ -26,7 +28,7 @@ paths:
               type: string
       responses:
         '200':
-          description: "Ok"
+          description: "Things are OK"
           content:
             application/json:
               schema:
@@ -52,7 +54,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Hello
+          description: Hello 200 response
           content:
             application/json:
               schema:
@@ -117,6 +119,7 @@ paths:
       operationId: nestedResponse
       responses:
         '200':
+          title: OkNestedResponse
           description: "Ok"
           content:
             application/json:
@@ -126,6 +129,7 @@ paths:
                   - first
                 properties:
                   first:
+                    title: FirstResponse
                     type: object
                     required:
                       - second
@@ -153,6 +157,7 @@ components:
   schemas:
     # just a boring, normal, not interesting struct
     Hello:
+      description: Hello description
       required:
         - myName
         - my_age
@@ -167,6 +172,7 @@ components:
     # test various combinations of nullable and required
     NullableStruct:
       # struct itself is nullable
+      description: This is how we represent a struct that is nullable
       nullable: true
       required:
         - this
@@ -194,6 +200,7 @@ components:
       type: any
 
     AllOfTest:
+      description: Test the AllOf struct generation
       allOf:
         - $ref: '#/components/schemas/Hello'
         - type: object
@@ -205,6 +212,7 @@ components:
             favourite_colour:
               type: string
             feet_info:
+              title: FeetInfo
               required:
                 - number_of_toes
                 - webbed
@@ -219,6 +227,7 @@ components:
                   $ref: '#/components/schemas/Anything'
 
     OneOfTest:
+      description: Test the OneOf enum generation
       oneOf:
         - $ref: '#/components/schemas/Hello'
         - $ref: '#/components/schemas/NullableStruct'
@@ -232,3 +241,20 @@ components:
                 type: number
               y:
                 type: string
+
+
+    StringEnum:
+      type:
+        string
+      enum:
+        - "foo"
+        - "bar"
+        - "baz-quxx"
+
+    # HasAdditionalProps:
+    #   additionalProperties:
+    #     true
+
+    # HasADefault:
+    #   type: integer
+    #   default: 10
