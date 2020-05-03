@@ -305,7 +305,7 @@ where
 fn walk_operation(
     op: &Operation,
     method: RawMethod,
-    path: ApiPath,
+    _path: ApiPath,
     route_path: &RoutePath,
     type_index: &mut TypeLookup,
     components: &Components,
@@ -488,7 +488,7 @@ fn walk_responses(
                 ApiStatusCode::Range(v) => invalid!("Status code ranges not supported '{}'", v),
             }?;
             let resp = dereference(resp, &components.responses)?;
-            walk_response(resp, path.clone(), type_index).map(|pth| (code, pth))
+            walk_response(resp, path.clone().push(code.as_u16().to_string()), type_index).map(|pth| (code, pth))
         })
         .collect::<Result<_>>()?;
 
@@ -698,8 +698,9 @@ fn generate_rust_type(
                 T::OneOf(variants) => {
                     let variants: Vec<_> = variants
                         .iter()
-                        .map(|var| {
-                            Variant::new(var.canonicalize().to_string().parse().unwrap())
+                        .enumerate()
+                        .map(|(ix, var)| {
+                            Variant::new(format!("V{}", ix + 1).parse().unwrap())
                                 .type_path(Some(var.clone()))
                         })
                         .collect();
@@ -797,25 +798,55 @@ fn generate_struct_def(
         })
         .collect::<Result<_>>()?;
     let derives = get_derive_tokens();
-    let tokens = if meta.nullable {
-        // Uh oh. We can't define a 'nullable stuct'. Instead make a struct with
-        // a different name and create alias to it
-        let new_path = TypePath::from(ApiPath::from(type_path.clone()).push("opt"));
-        let new_name = new_path.canonicalize();
-        quote! {
-            #descr
-            #derives
-            #visibility struct #new_name {
-                #(pub #fieldnames: #fields),*
+    // Another tricky bit. We have to create 'some' type with the
+    // canonical name, either concrete struct or alias, so that it can be
+    // referenced from elsewhere. But we also need want to potentially
+    // rename the type to the 'title', and also perhaps make it an 'nullable'
+    // which amounts to creating an inner type and then aliasing to Option<Inner>
+    // So now we handle these various cases
+    let tokens = match (&meta.title, meta.nullable) {
+        (None, false) => {
+            quote! {
+                #descr
+                #derives
+                #visibility struct #name {
+                    #(pub #fieldnames: #fields),*
+                }
             }
-            #visibility type #name = Option<#new_name>;
         }
-    } else {
-        quote! {
-            #descr
-            #derives
-            #visibility struct #name {
-                #(pub #fieldnames: #fields),*
+        (None, true) => {
+            let new_path = TypePath::from(ApiPath::from(type_path.clone()).push("opt"));
+            let new_name = new_path.canonicalize();
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                #visibility type #name = Option<#new_name>;
+            }
+        }
+        (Some(title), false) => {
+            let new_name = title.parse::<Ident>()?;
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                // This alias is not visible because we prefer to use new_name
+                type #name = #new_name;
+            }
+        }
+        (Some(title), true) => {
+            let new_name = title.parse::<Ident>()?;
+            quote! {
+                #descr
+                #derives
+                #visibility struct #new_name {
+                    #(pub #fieldnames: #fields),*
+                }
+                #visibility type #name = Option<#new_name>;
             }
         }
     };
@@ -830,6 +861,12 @@ pub(crate) fn generate_enum_def(
     variants: &[Variant],
     dflt: Option<&Variant>,
 ) -> TokenStream {
+
+    if variants.is_empty() && dflt.is_none() {
+        // Should not be able to get here (?)
+        panic!("Enum '{}' has no variants", name);
+    }
+
     // Special-case the default variant
     let default = dflt.map(|variant| {
         let docs = variant.description.as_ref().map(doc_comment);

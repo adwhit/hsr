@@ -119,6 +119,7 @@ paths:
       operationId: nestedResponse
       responses:
         '200':
+          title: OkNestedResponse
           description: "Ok"
           content:
             application/json:
@@ -128,6 +129,7 @@ paths:
                   - first
                 properties:
                   first:
+                    title: FirstResponse
                     type: object
                     required:
                       - second
@@ -210,6 +212,7 @@ components:
             favourite_colour:
               type: string
             feet_info:
+              title: FeetInfo
               required:
                 - number_of_toes
                 - webbed

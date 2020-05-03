@@ -422,6 +422,7 @@ impl Default for Visibility {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct TypeMetadata {
+    title: Option<String>,
     description: Option<String>,
     nullable: bool,
     visibility: Visibility,
@@ -451,6 +452,7 @@ impl TypeMetadata {
 impl From<openapiv3::SchemaData> for TypeMetadata {
     fn from(from: openapiv3::SchemaData) -> Self {
         Self {
+            title: from.title,
             description: from.description,
             nullable: from.nullable,
             visibility: Visibility::Public,
