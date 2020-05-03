@@ -83,7 +83,13 @@ impl Route {
         });
         let meta = TypeMetadata::default()
             .with_description(format!("Returned from operation '{}'", self.operation_id));
-        let enum_def = generate_enum_def(&enum_name, &meta, &variants, default_variant.as_ref(), false);
+        let enum_def = generate_enum_def(
+            &enum_name,
+            &meta,
+            &variants,
+            default_variant.as_ref(),
+            false,
+        );
 
         let status_matches = {
             let mut status_matches: Vec<_> = self

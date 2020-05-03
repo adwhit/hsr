@@ -326,7 +326,7 @@ HTTP/1.1 200 OK
         "would_take_to_meet_family": true
     }
 }
-``` sh
+```
 
 Beautiful! This API really knows how make you feel good about yourself.
 

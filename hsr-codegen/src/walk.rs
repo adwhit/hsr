@@ -872,7 +872,7 @@ pub(crate) fn generate_enum_def(
     meta: &TypeMetadata,
     variants: &[Variant],
     dflt: Option<&Variant>,
-    untagged: bool
+    untagged: bool,
 ) -> TokenStream {
     if variants.is_empty() && dflt.is_none() {
         // Should not be able to get here (?)
