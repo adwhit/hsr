@@ -19,8 +19,11 @@ impl TestApi for Api {
         })
     }
 
-    async fn two_query_params(&self, myName: String, my_age: Option<i64>) -> api::TwoQueryParams {
-        api::TwoQueryParams::Ok(api::Hello { myName, my_age })
+    async fn two_query_params(&self, my_name: String, my_age: Option<i64>) -> api::TwoQueryParams {
+        api::TwoQueryParams::Ok(api::Hello {
+            myName: my_name,
+            my_age,
+        })
     }
 
     async fn just_default(&self) -> api::JustDefault {

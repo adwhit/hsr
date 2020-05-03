@@ -218,6 +218,9 @@ impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
 pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Route>>)> {
+    if !api.security.is_empty() {
+        todo!("Security not supported")
+    }
     let mut type_index = TypeLookup::new();
     let dummy = Default::default();
     let components = api.components.as_ref().unwrap_or(&dummy);
@@ -310,7 +313,7 @@ where
 fn walk_operation(
     op: &Operation,
     method: RawMethod,
-    _path: ApiPath,
+    path: ApiPath,
     route_path: &RoutePath,
     type_index: &mut TypeLookup,
     components: &Components,
@@ -319,8 +322,12 @@ fn walk_operation(
 
     use Parameter::*;
 
-    let operation_id = match op.operation_id {
-        Some(ref op) => op.parse(),
+    if !op.security.is_empty() {
+        todo!("Security not supported")
+    }
+
+    let (operation_id, path) = match op.operation_id {
+        Some(ref op) => op.parse().map(|opid| (opid, path.push(op))),
         None => invalid!("Missing operationId for '{}'", route_path),
     }?;
 
@@ -430,12 +437,7 @@ fn walk_operation(
 
     let method = Method::from_raw(method, body_path)?;
 
-    let responses = walk_responses(
-        &op.responses,
-        path.push("responses"),
-        type_index,
-        components,
-    )?;
+    let responses = walk_responses(&op.responses, path, type_index, components)?;
 
     let route = Route::new(
         op.summary.clone(),
@@ -493,7 +495,12 @@ fn walk_responses(
                 ApiStatusCode::Range(v) => invalid!("Status code ranges not supported '{}'", v),
             }?;
             let resp = dereference(resp, &components.responses)?;
-            walk_response(resp, path.clone().push(code.as_u16().to_string()), type_index).map(|pth| (code, pth))
+            walk_response(
+                resp,
+                path.clone().push(code.as_u16().to_string()),
+                type_index,
+            )
+            .map(|pth| (code, pth))
         })
         .collect::<Result<_>>()?;
 
@@ -866,7 +873,6 @@ pub(crate) fn generate_enum_def(
     variants: &[Variant],
     dflt: Option<&Variant>,
 ) -> TokenStream {
-
     if variants.is_empty() && dflt.is_none() {
         // Should not be able to get here (?)
         panic!("Enum '{}' has no variants", name);

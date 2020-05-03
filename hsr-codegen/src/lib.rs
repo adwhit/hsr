@@ -241,24 +241,26 @@ impl quote::ToTokens for Ident {
 /// It can be used to keep track of where resources (particularly type
 /// definitions) are located.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct ApiPath(Vec<String>);
+pub(crate) struct ApiPath {
+    path: Vec<String>,
+}
 
 impl ApiPath {
     fn push(mut self, s: impl Into<String>) -> Self {
-        self.0.push(s.into());
+        self.path.push(s.into());
         self
     }
 }
 
 impl From<TypePath> for ApiPath {
     fn from(path: TypePath) -> Self {
-        Self(path.0)
+        Self { path: path.0 }
     }
 }
 
 impl std::fmt::Display for ApiPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
-        let joined = self.0.join(".");
+        let joined = self.path.join(".");
         write!(f, "{}", joined)
     }
 }
@@ -272,7 +274,7 @@ pub(crate) struct TypePath(Vec<String>);
 
 impl From<ApiPath> for TypePath {
     fn from(path: ApiPath) -> Self {
-        Self(path.0)
+        Self(path.path)
     }
 }
 
@@ -291,11 +293,17 @@ impl TypePath {
         Ok(Self(path))
     }
 
+    // Turn an TypePath into a TypeName, which generally
+    // will be the name actually used for a type definition
     pub(crate) fn canonicalize(&self) -> TypeName {
         let parts: Vec<&str> = self.0.iter().map(String::as_str).collect();
         let parts = match &parts[..] {
-            // strip out not-useful components path
+            // if it is from 'components', strip out not-useful components path
             ["components", "schemas", rest @ ..] => &rest,
+            // otherwise, assume it is from 'paths'. Ignore the first two sections
+            // and start from 'operation id'
+            ["paths", _path, _method, rest @ ..] => &rest,
+            // else just take what we're given
             rest => rest,
         };
         let joined = parts.join(" ");
