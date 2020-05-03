@@ -15,13 +15,13 @@ impl api::HsrTutorialApi for Api {
         let lay_it_on_thick = if obs_lvl <= 0 {
             None
         } else {
-            Some(api::GreetOkLayItOnThick {
+            Some(api::LayItOnThick {
                 is_wonderful_person: obs_lvl >= 1,
                 is_kind_to_animals: obs_lvl >= 2,
                 would_take_to_meet_family: obs_lvl >= 3,
             })
         };
-        api::Greet::Ok(api::GreetOk {
+        api::Greet::Ok(api::Greet200 {
             greeting: format!("Greetings {}, pleased to meet you", name),
             lay_it_on_thick,
         })

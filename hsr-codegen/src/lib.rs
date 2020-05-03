@@ -301,7 +301,8 @@ impl TypePath {
             // if it is from 'components', strip out not-useful components path
             ["components", "schemas", rest @ ..] => &rest,
             // otherwise, assume it is from 'paths'. Ignore the first two sections
-            // and start from 'operation id'
+            // and start from 'operation id'. It is OK to do this because
+            // operation ids are guaranteed to be unique
             ["paths", _path, _method, rest @ ..] => &rest,
             // else just take what we're given
             rest => rest,

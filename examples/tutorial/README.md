@@ -74,6 +74,7 @@ fn main() {
     let mut f = std::fs::File::create(&dest_path).unwrap();
 
     write!(f, "{}", code).unwrap();
+    // If we alter the spec.yaml, we should rebuild the api
     println!("cargo:rerun-if-changed=spec.yaml");
 }
 ```
@@ -100,32 +101,31 @@ enlightening (and Rust doesn't make it easy), instead we view it in `rustdoc`.
 $ cargo doc --open
 ```
 Ok, this time it did something useful. Inside the `api` module we can see a promising-sounding
-thing like `client` and `server` modules and an `HsrTutorialApi` trait:
+things like `client` and `server` modules and an `HsrTutorialApi` trait.
 
-![api doc](assets/docs-hello-api.png).
+The `HsrTutorialApi` trait has a rather intimidating definition, something like:
 
-The `HsrTutorialApi` trait has a rather intimidating definition:
-
-![api doc](assets/docs-api-trait.png).
-
-This is a little misleading, Basically this trait should be read as:
+``` rust
+trait HsrTutorialApi {
+    fn hello<'life0, 'async_trait>(&'life0 self) -> Pin<Box<dyn Future<Output = Hello> + 'async_trait>>
+    where
+      'life0: 'async_trait,
+      Self: 'async_trait;
+}
+```
+This is not as complicated as it looks. Basically this trait should be read as:
 
 ```rust
 trait HsrTutorialapi {
     async fn hello(&self) -> Hello;
 }
-
-// defined elsewhere
-
-pub enum Hello {
-    Ok
-}
 ```
-Which we can see closely matches the definition in `spec.yaml`.
+where `Hello` is defined elsewhere. Which we can see closely matches the definition in `spec.yaml`.
 
-Unfortunately "async-in-traits" is not yet supported [(issue)](https://github.com/rust-lang/rfcs/issues/2739)
-so for now we work around it with the amazing [`async-trait`](https://github.com/dtolnay/async-trait),
-which gives us these slightly inscrutable api definitions.
+Why does the definition... not look like that? Well, unfortunately "async-in-traits" is not yet
+supported [(issue)](https://github.com/rust-lang/rfcs/issues/2739) so for now we work around it
+with the amazing [`async-trait`](https://github.com/dtolnay/async-trait),
+which however gives us these slightly inscrutable api definitions.
 
 Lets gloss over this for now and implement the trait. Continuing in `src/lib.rs`:
 
@@ -176,9 +176,9 @@ can be installed with `pip3 install httpie --user`.
 cargo run
 
 // terminal 2
-➜  ~ http --print hHbB :8000/hello 
+➜  ~ http --print hH :8000/hello
 GET /hello HTTP/1.1
-Host: localhost:8000
+# ...
 
 HTTP/1.1 200 OK
 ```
@@ -205,7 +205,7 @@ Add the following to you `spec.yaml`:
           required: true
           schema:
             type: string
-        - name: obsequiousness_level
+        - name: obsequiousness
           in: query
           required: false
           schema:
@@ -223,16 +223,112 @@ Add the following to you `spec.yaml`:
                   greeting:
                     type: string
                   lay_it_on_thick:
-                    type: object
-                    required:
-                      - is_wonderful_person
-                      - is_kind_to_animals
-                      - would_take_to_meet_family
-                    properties:
-                      is_wonderful_person:
-                        type: boolean
-                      is_kind_to_animals:
-                        type: boolean
-                      would_take_to_meet_family:
-                        type: boolean
+                    $ref: '#/components/schemas/LayItOnThick'
+
+components:
+  schemas:
+    LayItOnThick:
+      type: object
+      required:
+        - is_wonderful_person
+        - is_kind_to_animals
+        - would_take_to_meet_family
+      properties:
+        is_wonderful_person:
+          type: boolean
+        is_kind_to_animals:
+          type: boolean
+        would_take_to_meet_family:
+          type: boolean
 ```
+
+Now if we re-run `cargo doc` and refresh our browser, we have some new goodies. In the trait definition:
+
+``` rust
+trait HsrTutorialApi {
+    // .. previous definition
+
+    fn greet<'life0, 'async_trait>(&'life0 self, name: String, obsequiousness_level: Option<i64>)
+        -> Pin<Box<dyn Future<Output = Greet> + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait;
+}
+```
+... which we have learned should be read as
+
+``` rust
+trait HsrTutorialapi {
+    // ...
+
+    async fn greet(&self, name: String, obsequiosness_level: Option<i64>) -> Greet;
+}
+```
+
+We implement it like so:
+
+
+``` rust
+#[hsr::async_trait::async_trait(?Send)]
+impl api::HsrTutorialApi for Api {
+    // ... previous
+
+    async fn greet(&self, name: String, obsequiousness_level: Option<i64>) -> api::Greet {
+        let obs_lvl = obsequiousness_level.unwrap_or(0);
+        let lay_it_on_thick = if obs_lvl <= 0 {
+            None
+        } else {
+            Some(api::LayItOnThick {
+                is_wonderful_person: obs_lvl >= 1,
+                is_kind_to_animals: obs_lvl >= 2,
+                would_take_to_meet_family: obs_lvl >= 3,
+            })
+        };
+        api::Greet::Ok(api::Greet200 {
+            greeting: format!("Greetings {}, pleased to meet you", name),
+            lay_it_on_thick,
+        })
+    }
+}
+```
+
+That's our new endpoint implemented. Let's try it out:
+
+``` sh
+➜  ~ http ":8000/greet/Alex"
+HTTP/1.1 200 OK
+
+{
+    "greeting": "Greetings Alex, pleased to meet you",
+    "lay_it_on_thick": null
+}
+
+➜  ~ http ":8000/greet/Alex?obsequiousness=1"
+HTTP/1.1 200 OK
+
+{
+    "greeting": "Greetings Alex, pleased to meet you",
+    "lay_it_on_thick": {
+        "is_kind_to_animals": false,
+        "is_wonderful_person": true,
+        "would_take_to_meet_family": false
+    }
+}
+
+➜  ~ http ":8000/greet/Alex?obsequiousness=50"
+HTTP/1.1 200 OK
+
+{
+    "greeting": "Greetings Alex, pleased to meet you",
+    "lay_it_on_thick": {
+        "is_kind_to_animals": true,
+        "is_wonderful_person": true,
+        "would_take_to_meet_family": true
+    }
+}
+``` sh
+
+Beautiful! This API really knows how make you feel good about yourself.
+
+That's it for now. Take a look at the `petstore` example for a more complex spec
+that implements a somewhat-realistic looking API.

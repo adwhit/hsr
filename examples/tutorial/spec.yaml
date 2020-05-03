@@ -23,7 +23,7 @@ paths:
           required: true
           schema:
             type: string
-        - name: obsequiousness_level
+        - name: obsequiousness
           in: query
           required: false
           schema:
@@ -41,15 +41,20 @@ paths:
                   greeting:
                     type: string
                   lay_it_on_thick:
-                    type: object
-                    required:
-                      - is_wonderful_person
-                      - is_kind_to_animals
-                      - would_take_to_meet_family
-                    properties:
-                      is_wonderful_person:
-                        type: boolean
-                      is_kind_to_animals:
-                        type: boolean
-                      would_take_to_meet_family:
-                        type: boolean
+                    $ref: '#/components/schemas/LayItOnThick'
+
+components:
+  schemas:
+    LayItOnThick:
+      type: object
+      required:
+        - is_wonderful_person
+        - is_kind_to_animals
+        - would_take_to_meet_family
+      properties:
+        is_wonderful_person:
+          type: boolean
+        is_kind_to_animals:
+          type: boolean
+        would_take_to_meet_family:
+          type: boolean

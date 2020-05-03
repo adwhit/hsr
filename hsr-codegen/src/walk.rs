@@ -716,7 +716,7 @@ fn generate_rust_type(
                                 .type_path(Some(var.clone()))
                         })
                         .collect();
-                    generate_enum_def(&name, &typ.meta, &variants, None)
+                    generate_enum_def(&name, &typ.meta, &variants, None, true)
                 }
                 T::Primitive(p) => {
                     let id = crate::ident(p);
@@ -744,7 +744,7 @@ fn generate_rust_type(
                             Ok(var)
                         })
                         .collect::<Result<_>>()?;
-                    generate_enum_def(&name, &typ.meta, &variants, None)
+                    generate_enum_def(&name, &typ.meta, &variants, None, false)
                 }
                 T::Array(_) => {
                     let path = ApiPath::from(type_path.clone());
@@ -872,11 +872,20 @@ pub(crate) fn generate_enum_def(
     meta: &TypeMetadata,
     variants: &[Variant],
     dflt: Option<&Variant>,
+    untagged: bool
 ) -> TokenStream {
     if variants.is_empty() && dflt.is_none() {
         // Should not be able to get here (?)
         panic!("Enum '{}' has no variants", name);
     }
+
+    // should serde do untagged serialization?
+    // (The answer should be 'no', unless it is a OneOf/AnyOf type)
+    let serde_tag = if untagged {
+        Some(quote! {#[serde(untagged)]})
+    } else {
+        None
+    };
 
     // Special-case the default variant
     let default = dflt.map(|variant| {
@@ -901,6 +910,7 @@ pub(crate) fn generate_enum_def(
     quote! {
         #descr
         #derives
+        #serde_tag
         #visibility enum #name {
             #(#variants,)*
             #default
