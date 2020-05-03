@@ -250,8 +250,13 @@ fn walk_paths(
         let route_path = RoutePath::analyse(path)?;
 
         debug!("Gathering types for path: {:?}", path);
-        // TODO lookup
+        // TODO lookup rather than unwrap
         let pathitem = unwrap_ref(&ref_or_item)?;
+
+        if !pathitem.parameters.is_empty() {
+            todo!("Path-level paraters are not supported")
+        }
+
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
             let route = walk_operation(
