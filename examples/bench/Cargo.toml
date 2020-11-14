@@ -10,4 +10,4 @@ hsr-codegen = { path = "../../hsr-codegen" }
 [dependencies]
 hsr = { path = "../../hsr" }
 serde = "1.0.106"
-actix-rt = "1.1.0"
+actix-rt = "1.1.1"

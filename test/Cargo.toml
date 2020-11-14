@@ -11,8 +11,8 @@ hsr-codegen = { path = "../hsr-codegen" }
 hsr = { path = "../hsr" }
 serde = "1.0.106"
 env_logger = "0.7.1"
-actix-rt = "1.1.0"
-serde_json = "1.0.51"
+actix-rt = "1.1.1"
+serde_json = "1.0.52"
 
 [features]
 pretty = ["hsr-codegen/pretty"]

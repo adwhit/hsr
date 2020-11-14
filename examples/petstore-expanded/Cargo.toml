@@ -9,10 +9,10 @@ hsr-codegen = { path = "../../hsr-codegen" }
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = { version = "1.0.98", features = ['derive'] }
-regex = "1.2.1"
-rand = "0.7.0"
-env_logger = "0.6.2"
+serde = { version = "1.0.106", features = ['derive'] }
+regex = "1.3.7"
+rand = "0.7.3"
+env_logger = "0.7.1"
 
 [features]
 pretty = ["hsr-codegen/pretty"]

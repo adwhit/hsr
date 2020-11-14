@@ -3,7 +3,7 @@ use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
     AdditionalProperties, AnySchema, Components, ObjectType, OpenAPI, Operation, Parameter,
-    ParameterSchemaOrContent, ReferenceOr, Schema, SchemaData, SchemaKind,
+    ParameterData, ParameterSchemaOrContent, ReferenceOr, Schema, SchemaData, SchemaKind,
     StatusCode as ApiStatusCode, Type as ApiType,
 };
 use proc_macro2::TokenStream;
@@ -256,10 +256,6 @@ fn walk_paths(
         // TODO lookup rather than unwrap
         let pathitem = unwrap_ref(&ref_or_item)?;
 
-        if !pathitem.parameters.is_empty() {
-            todo!("Path-level paraters are not supported")
-        }
-
         apply_over_operations(pathitem, |op, method| {
             let api_path = api_path.clone().push(method.to_string());
             let route = walk_operation(
@@ -269,6 +265,7 @@ fn walk_paths(
                 &route_path,
                 type_index,
                 components,
+                &pathitem.parameters,
             )?;
             routes.entry(path.clone()).or_default().push(route);
             Ok(())
@@ -317,6 +314,7 @@ fn walk_operation(
     route_path: &RoutePath,
     type_index: &mut TypeLookup,
     components: &Components,
+    path_parameters: &[ReferenceOr<Parameter>],
 ) -> Result<Route> {
     // TODO: Send in params from path-level
 
@@ -337,13 +335,20 @@ fn walk_operation(
     let mut query_params = Map::new();
 
     let mut expected_route_params: Set<&str> = route_path.path_args().collect();
-    let mut duplicate_param_name_check = Set::new();
 
-    for param in &op.parameters {
+    // tricky duplicate logic. We probably don't want to allow parameters with the same name (they
+    // need to be passed to a function) but we want to allow path-level parameters to be overridden by
+    // operation-level parameters
+    let mut duplicate_param_name_check: Set<(&str, &'static str)> = Set::new();
+
+    for (param, source) in path_parameters
+        .iter()
+        .map(|p| (p, "from path level"))
+        .chain(op.parameters.iter().map(|p| (p, "from op level")))
+    {
         // for each parameter we gather the type but we also need to
         // collect the Queries and Paths to make the parent Query and Path types
         let param = dereference(param, &components.parameters)?;
-
         let parameter_data = match param {
             Path { parameter_data, .. }
             | Query { parameter_data, .. }
@@ -351,10 +356,13 @@ fn walk_operation(
             | Cookie { parameter_data, .. } => parameter_data,
         };
 
+        this is all wrong. the correct thing to do is to build the types in place,
+        then send a pre-build Query and Path parameters into this function.
+
         // We use macros here and below to cut down on duplication between path and query params
         macro_rules! build_param_type {
             ($params: ident, $path: expr) => {
-                if !duplicate_param_name_check.insert(&parameter_data.name) {
+                if !duplicate_param_name_check.insert((&parameter_data.name, source)) {
                     invalid!("Duplicated parameter '{}'", parameter_data.name)
                 }
                 let path = path.clone().push($path).push(&parameter_data.name);
@@ -364,7 +372,8 @@ fn walk_operation(
                 match &parameter_data.format {
                     ParameterSchemaOrContent::Schema(schema) => {
                         let typ = build_type_recursive(&schema, path.clone(), type_index)?;
-                        assert!(type_index.insert(TypePath::from(path), typ).is_none());
+                        // we deliberately allow the definition to be overridden
+                        type_index.insert(TypePath::from(path), typ);
                     }
                     ParameterSchemaOrContent::Content(_) => todo!(),
                 }

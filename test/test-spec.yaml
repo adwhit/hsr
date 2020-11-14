@@ -61,16 +61,24 @@ paths:
                 $ref: "#/components/schemas/Hello"
 
   /twoQueryParams:
+    # path-level parameter
+    parameters:
+      - name: myName
+        in: query
+        required: true
+        description: User name
+        schema:
+          type: string
+      - name: my_age
+        in: query
+        description: User age
+        schema:
+          type: boolean
     get:
       summary: echo name and age
       operationId: two_query_params
       parameters:
-        - name: myName
-          in: query
-          required: true
-          description: User name
-          schema:
-            type: string
+        # override parameter at operation-level
         - name: my_age
           in: query
           required: false
