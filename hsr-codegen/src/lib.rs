@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
-use actix_http::http::StatusCode;
+use actix_http::StatusCode;
 use derive_more::{Deref, Display};
 use either::Either;
 use heck::{CamelCase, MixedCase, SnakeCase};
@@ -612,7 +612,7 @@ fn generate_rust_client(routes: &Map<String, Vec<Route>>) -> TokenStream {
         #[allow(unused_imports)]
         pub mod client {
             use super::*;
-            use hsr::actix_http::http::Method;
+            use hsr::actix_http::Method;
             use hsr::awc::Client as ActixClient;
             use hsr::ClientError;
             use hsr::futures::future::{err as fut_err, ok as fut_ok};
@@ -702,12 +702,14 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
             pub use hsr::actix_web::{
                 self, App, HttpServer, HttpRequest, HttpResponse, Responder, Either as AxEither,
                 Error as ActixError,
+                error::ErrorInternalServerError,
                 web::{self, Json as AxJson, Query as AxQuery, Path as AxPath, Data as AxData, ServiceConfig},
-                dev::HttpResponseBuilder,
+                body::BoxBody,
+                HttpResponseBuilder,
                 middleware::Logger
             };
             pub use hsr::url::Url;
-            pub use hsr::actix_http::http::{StatusCode};
+            pub use hsr::actix_http::{StatusCode};
             pub use hsr::futures::future::{Future, FutureExt, TryFutureExt, Ready, ok as fut_ok};
             pub use hsr::serde_json::Value as JsonValue;
 

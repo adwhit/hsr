@@ -23,7 +23,7 @@ pub use openssl;
 pub use url::Url;
 
 // We re-export this type as it is used in all the trait functions
-use actix_http::http::StatusCode;
+use actix_http::StatusCode;
 use actix_web::{Error as ActixError, HttpResponse};
 
 /// Associate an http status code with a type. Defaults to 501 Internal Server Error
@@ -51,16 +51,25 @@ pub fn configure_spec(
     ui: &'static str,
 ) {
     use actix_web::http::header::ContentType;
+    async fn serve_spec(spec: &'static str) -> HttpResponse {
+        HttpResponse::Ok()
+            .insert_header(ContentType::json())
+            .body(spec.to_owned())
+    }
+    async fn serve_ui(ui: &'static str) -> HttpResponse {
+        HttpResponse::Ok()
+            .insert_header(ContentType::json())
+            .body(ui.to_owned())
+    }
     // Add route serving up the json spec
     cfg.route(
         "/spec.json",
-        actix_web::web::get().to(move || HttpResponse::Ok().set(ContentType::json()).body(spec)),
+        actix_web::web::get().to(
+            move || serve_spec(spec), // spec.clone()
+        ),
     )
     // Add route serving up the rendered ui
-    .route(
-        "/ui.html",
-        actix_web::web::get().to(move || HttpResponse::Ok().set(ContentType::html()).body(ui)),
-    );
+    .route("/ui.html", actix_web::web::get().to(move || serve_ui(ui)));
 }
 
 pub struct Config {

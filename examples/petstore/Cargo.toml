@@ -22,7 +22,7 @@ hsr = { path = "../../hsr" }
 rand = "0.7.3"
 regex = "1.3.6"
 serde = "1.0.106"
-actix-rt = "1.1.0"
+actix-rt = "2.7.0"
 
 [features]
 pretty = ["hsr-codegen/pretty"]

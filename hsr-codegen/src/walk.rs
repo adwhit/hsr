@@ -418,7 +418,7 @@ fn walk_operation(
                 Some((type_path, $params))
             }
         };
-    };
+    }
 
     let path_params = type_from_params!(path_params, "path");
     let query_params = type_from_params!(query_params, "query");
