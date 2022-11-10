@@ -5,13 +5,13 @@ authors = ["Alex Whitney <adwhit@fastmail.com>"]
 edition = "2018"
 
 [build-dependencies]
-hsr-codegen = { path = "../../hsr-codegen" }
+hsr-codegen = { path = "../../hsr-codegen", features = ["pretty"] }
 
 [dependencies]
 hsr = { path = "../../hsr" }
 serde = "1.0.106"
 env_logger = "0.7.1"
-actix-rt = "1.1.0"
+actix-rt = "2.7.0"
 
 [features]
 pretty = ["hsr-codegen/pretty"]

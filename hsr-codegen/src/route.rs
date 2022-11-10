@@ -1,4 +1,4 @@
-use actix_http::http::StatusCode;
+use actix_http::StatusCode;
 use heck::{CamelCase, SnakeCase};
 use openapiv3::{ReferenceOr, StatusCode as ApiStatusCode};
 use proc_macro2::TokenStream;
@@ -133,14 +133,14 @@ impl Route {
                         Some(_) => {
                             quote! {
                                 #name(inner) => {
-                                    HttpResponseBuilder::new(status_code).json(inner)
+                                    HttpResponse::build(status_code).json(inner)
                                 }
                             }
                         }
                         None => {
                             quote! {
                                 #name => {
-                                    HttpResponseBuilder::new(status_code).finish()
+                                    HttpResponse::build(status_code).finish()
                                 }
                             }
                         }
@@ -174,15 +174,14 @@ impl Route {
             }
 
             impl Responder for #enum_name {
-                type Error = std::convert::Infallible;
-                type Future = Ready<Result<HttpResponse, <Self as Responder>::Error>>;
-                fn respond_to(self, _req: &HttpRequest) -> Self::Future {
+                type Body = BoxBody;
+                fn respond_to(self, _req: &HttpRequest) -> HttpResponse<Self::Body> {
                     use #enum_name::*;
                     let status_code = self.status_code();
                     let resp = match self {
                         #(#response_match_arms)*
                     };
-                    fut_ok(resp)
+                    resp
                 }
             }
 
@@ -342,7 +341,7 @@ impl Route {
                                         .json::<#type_name>()
                                         .await {
                                             Ok(body) => Result::Ok(#result_type::#variant(body)),
-                                            Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                            Err(e) => Result::Err(ClientError::Actix(ErrorInternalServerError(e)))
                                         }
                                 }
                             }
@@ -379,7 +378,7 @@ impl Route {
                                     .json::<#type_name>()
                                     .await {
                                         Ok(body) => Result::Ok(#result_type::Default { status_code, body }),
-                                        Err(e) => Result::Err(ClientError::Actix(e.into()))
+                                        Err(e) => Result::Err(ClientError::Actix(ErrorInternalServerError(e)))
                                     }
                             }
                         }
@@ -409,7 +408,7 @@ impl Route {
                     .request(Method::#method, url.as_str())
                     // Send, giving a future containing an HttpResponse
                     #send_request
-                    .await.map_err(ActixError::from)?;
+                    .await.map_err(ErrorInternalServerError)?;
                 // We match on the status type to handle the return correctly
                 match resp.status().as_u16() {
                     #(#resp_match_arms)*

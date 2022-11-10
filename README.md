@@ -30,7 +30,7 @@ with a mocked database backend.
 * Type-safe path/query/json handling
 * Supports all HTTP verbs
 * High performance
-* Based on `async/await` and `actix-web 2.0`
+* Based on `async/await` and `actix-web 4.2.1`
 
 ## FAQ
 

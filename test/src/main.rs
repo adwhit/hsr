@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::spawn(move || {
         println!("Serving at '{}'", uri);
-        let mut system = hsr::actix_rt::System::new("main");
+        let system = hsr::actix_rt::System::new();
         let server = server::serve(Api, hsr::Config::with_host(uri));
         system.block_on(server).unwrap();
     });
