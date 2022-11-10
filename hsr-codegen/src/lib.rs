@@ -744,25 +744,8 @@ pub fn generate_from_yaml_source(mut yaml: impl std::io::Read) -> Result<String>
 /// Run the code through `rustfmt`.
 #[cfg(feature = "pretty")]
 pub fn prettify_code(input: String) -> Result<String> {
-    let mut buf = Vec::new();
-    {
-        let mut config = rustfmt_nightly::Config::default();
-        config.set().emit_mode(rustfmt_nightly::EmitMode::Stdout);
-        config.set().edition(rustfmt_nightly::Edition::Edition2018);
-        let mut session = rustfmt_nightly::Session::new(config, Some(&mut buf));
-        session
-            .format(rustfmt_nightly::Input::Text(input))
-            .map_err(|e| Error::BadCodegen(e.to_string()))?;
-    }
-    if buf.is_empty() {
-        return Err(Error::BadCodegen("empty buffer".to_string()));
-    }
-    let mut s = String::from_utf8(buf).unwrap();
-    // TODO no idea why this is necessary but... it is
-    if s.starts_with("stdin:\n\n") {
-        s = s.split_off(8);
-    }
-    Ok(s)
+    let formatted: String = rustfmt_wrapper::rustfmt(input).unwrap();
+    Ok(formatted)
 }
 
 #[cfg(test)]
