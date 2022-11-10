@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = "1.0.106"
+serde = "1.0.147"
 actix-rt = "2.7.0"
 
 [build-dependencies]

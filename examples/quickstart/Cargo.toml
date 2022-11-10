@@ -9,8 +9,8 @@ hsr-codegen = { path = "../../hsr-codegen", features = ["pretty"] }
 
 [dependencies]
 hsr = { path = "../../hsr" }
-serde = "1.0.106"
-env_logger = "0.7.1"
+serde = "1.0.147"
+env_logger = "0.9.3"
 actix-rt = "2.7.0"
 
 [features]

@@ -1,5 +1,5 @@
 use actix_http::StatusCode;
-use heck::{CamelCase, SnakeCase};
+use heck::ToSnakeCase;
 use openapiv3::{ReferenceOr, StatusCode as ApiStatusCode};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -50,7 +50,7 @@ impl Route {
     }
 
     fn return_ty_name(&self) -> TypeName {
-        TypeName::from_str(&self.operation_id.deref().to_camel_case()).unwrap()
+        TypeName::from_str(&self.operation_id.deref().to_pascal_case()).unwrap()
     }
 
     fn documentation(&self) -> TokenStream {

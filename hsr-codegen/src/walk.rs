@@ -1,4 +1,4 @@
-use heck::CamelCase;
+use heck::ToPascalCase;
 use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::debug;
 use openapiv3::{
@@ -218,7 +218,7 @@ impl_objlike!(ObjectType);
 impl_objlike!(AnySchema);
 
 pub(crate) fn walk_api(api: &OpenAPI) -> Result<(TypeLookup, Map<String, Vec<Route>>)> {
-    if !api.security.is_empty() {
+    if !api.security.as_ref().map(|i| i.is_empty()).unwrap_or(true) {
         todo!("Security not supported")
     }
     let mut type_index = TypeLookup::new();
@@ -248,7 +248,7 @@ fn walk_paths(
 ) -> Result<Map<String, Vec<Route>>> {
     let mut routes: Map<String, Vec<Route>> = Map::new();
     let api_path = ApiPath::default().push("paths");
-    for (path, ref_or_item) in paths {
+    for (path, ref_or_item) in paths.iter() {
         let api_path = api_path.clone().push(path);
         let route_path = RoutePath::analyse(path)?;
 
@@ -322,7 +322,7 @@ fn walk_operation(
 
     use Parameter::*;
 
-    if !op.security.is_empty() {
+    if !op.security.as_ref().map(|inner| inner.is_empty()).unwrap_or(true) {
         todo!("Security not supported")
     }
 
@@ -617,6 +617,7 @@ fn build_type_recursive(
                 TypeInner::OneOf(oneof_types).with_meta(meta.into()),
             ));
         }
+        SchemaKind::Not { .. } => todo!("'not' is not yet supported")
     };
     let typ = match ty {
         // TODO make enums from string
@@ -632,7 +633,12 @@ fn build_type_recursive(
             }
 
             if !strty.enumeration.is_empty() {
-                TypeInner::StringEnum(strty.enumeration.clone())
+                let enums: Vec<_> = strty
+                    .enumeration
+                    .iter()
+                    .map(|t| t.as_ref().unwrap().clone())
+                    .collect();
+                TypeInner::StringEnum(enums)
             } else {
                 TypeInner::Primitive(Primitive::String)
             }
@@ -642,7 +648,7 @@ fn build_type_recursive(
         ApiType::Boolean {} => TypeInner::Primitive(Primitive::Bool),
         ApiType::Array(arr) => {
             // build the inner-type
-            let items = arr.items.clone().unbox();
+            let items = arr.items.as_ref().unwrap().clone().unbox();
             let path = path.clone().push("array");
             let innerty = build_type_recursive(&items, path.clone(), type_index)?;
             // add inner type to the registry
@@ -740,7 +746,7 @@ fn generate_rust_type(
                         .iter()
                         .map(|var| {
                             let var =
-                                Variant::new(var.to_camel_case().parse()?).rename(var.clone());
+                                Variant::new(var.to_pascal_case().parse()?).rename(var.clone());
                             Ok(var)
                         })
                         .collect::<Result<_>>()?;

@@ -10,7 +10,7 @@ use std::str::FromStr;
 use actix_http::StatusCode;
 use derive_more::{Deref, Display};
 use either::Either;
-use heck::{CamelCase, MixedCase, SnakeCase};
+use heck::{ToPascalCase, ToSnakeCase};
 use indexmap::{IndexMap as Map, IndexSet as Set};
 use log::{debug, info};
 use openapiv3::{
@@ -81,7 +81,7 @@ fn dereference<'a, T>(
 }
 
 fn api_trait_name(api: &OpenAPI) -> TypeName {
-    TypeName::from_str(&format!("{}Api", api.info.title.to_camel_case())).unwrap()
+    TypeName::from_str(&format!("{}Api", api.info.title.to_pascal_case())).unwrap()
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
@@ -308,7 +308,7 @@ impl TypePath {
             rest => rest,
         };
         let joined = parts.join(" ");
-        TypeName::from_str(&joined.to_camel_case()).unwrap()
+        TypeName::from_str(&joined.to_pascal_case()).unwrap()
     }
 }
 
@@ -321,7 +321,7 @@ struct TypeName(String);
 impl FromStr for TypeName {
     type Err = Error;
     fn from_str(val: &str) -> Result<Self> {
-        let camel = val.to_camel_case();
+        let camel = val.to_pascal_case();
         if val == camel {
             Ok(TypeName(camel))
         } else {
@@ -483,7 +483,7 @@ impl FieldMetadata {
 
 pub(crate) fn variant_from_status_code(code: &StatusCode) -> Ident {
     code.canonical_reason()
-        .and_then(|reason| reason.to_camel_case().parse().ok())
+        .and_then(|reason| reason.to_pascal_case().parse().ok())
         .unwrap_or_else(|| format!("Status{}", code.as_str()).parse().unwrap())
 }
 
