@@ -1,5 +1,11 @@
 # Changelog
 
+## Release 0.4.0
+
+* Update various dependencies, most notably `actix-web 4`
+* Switch formatter to `rustfmt-wrapper`
+* Bump editions to `2021`
+
 ## Release 0.3.0
 
 * Huuuge refactor to allow more precise type definitions.
